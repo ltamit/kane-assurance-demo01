@@ -1,17 +1,15 @@
 name: "Kane CLI Assurance · STLC Demo"
 
 # ─────────────────────────────────────────────────────────
-# All 7 STLC phases in one workflow, on YOUR machine.
-# Runs on a self-hosted Windows runner with Git Bash.
+# All 7 STLC phases in one workflow, on YOUR Windows machine.
+# Pure PowerShell — no bash, no jq, no unix tools.
 # Chrome opens VISIBLY on your desktop for phases 4-5.
 #
 # Prerequisites on your Windows machine:
 #   1. Self-hosted runner configured and running (.\run.cmd)
-#   2. Node.js 24+ installed
+#   2. Node.js 24+ installed and in PATH
 #   3. Google Chrome installed
 #   4. Kane CLI: npm install -g @testmuai/kane-cli
-#   5. jq: choco install jq
-#   6. Git Bash (comes with Git for Windows)
 #
 # Trigger: Actions → Kane CLI Assurance · STLC Demo → Run workflow
 # ─────────────────────────────────────────────────────────
@@ -64,7 +62,7 @@ jobs:
 
     defaults:
       run:
-        shell: 'C:/Program Files/Git/bin/bash.exe --noprofile --norc -e -o pipefail {0}'
+        shell: pwsh
 
     steps:
       # ── Setup ──────────────────────────────────────────
@@ -72,22 +70,23 @@ jobs:
 
       - name: "Setup · Verify prerequisites"
         run: |
-          echo "── Checking prerequisites ──"
-          echo "Node: $(node --version 2>/dev/null || echo 'NOT FOUND')"
-          echo "npm: $(npm --version 2>/dev/null || echo 'NOT FOUND')"
-          echo "jq: $(jq --version 2>/dev/null || echo 'NOT FOUND')"
-          echo "Kane CLI: $(kane-cli --version 2>/dev/null || echo 'NOT FOUND')"
-          echo "OS: $(uname -s) $(uname -m)"
-          echo ""
+          Write-Host "── Checking prerequisites ──" -ForegroundColor Cyan
+          Write-Host "Node: $(node --version 2>$null)"
+          Write-Host "npm: $(npm --version 2>$null)"
+          Write-Host "Kane CLI: $(kane-cli --version 2>$null)"
+          Write-Host "OS: $([System.Environment]::OSVersion.VersionString)"
+          Write-Host ""
 
       - name: "Setup · Install/update Kane CLI"
         run: |
           npm install -g @testmuai/kane-cli
           kane-cli --version
-          kane-cli install skill || true
+          kane-cli install skill 2>$null
+          if ($LASTEXITCODE -ne 0) { Write-Host "Skill install skipped" }
 
       - name: "Setup · Authenticate"
-        run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
+        run: |
+          kane-cli login --username "${{ secrets.LT_USERNAME }}" --access-key "${{ secrets.LT_ACCESS_KEY }}"
 
       # Restore .context/ from cache for phases that need prior state
       - name: "Setup · Restore context graph from cache"
@@ -113,15 +112,13 @@ jobs:
           inputs.phases == '1-requirements' ||
           inputs.phases == '1-to-3'
         run: |
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Phase 1: Requirements Analysis"
-          echo "  Ingesting: ${{ inputs.source_file }}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-          kane-cli context ingest "./${{ inputs.source_file }}" \
-            --as "${{ inputs.source_id }}" \
-            --mode ci
+          Write-Host ""
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+          Write-Host "  Phase 1: Requirements Analysis" -ForegroundColor Green
+          Write-Host "  Ingesting: ${{ inputs.source_file }}" 
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+          Write-Host ""
+          kane-cli context ingest "./${{ inputs.source_file }}" --as "${{ inputs.source_id }}" --mode ci
 
       - name: "Phase 1 · Extract use-cases"
         if: >-
@@ -129,9 +126,8 @@ jobs:
           inputs.phases == '1-requirements' ||
           inputs.phases == '1-to-3'
         run: |
-          kane-cli context extract \
-            --mode override \
-            --source "${{ inputs.source_id }}"
+          Write-Host "Extracting use-cases from: ${{ inputs.source_id }}"
+          kane-cli context extract --mode override --source "${{ inputs.source_id }}"
 
       - name: "Phase 1 · Results"
         if: >-
@@ -139,8 +135,8 @@ jobs:
           inputs.phases == '1-requirements' ||
           inputs.phases == '1-to-3'
         run: |
-          echo ""
-          echo "── Extracted use-cases ──"
+          Write-Host ""
+          Write-Host "── Extracted use-cases ──" -ForegroundColor Cyan
           kane-cli context list
 
       # ─────────────────────────────────────────────────────
@@ -151,60 +147,106 @@ jobs:
           inputs.phases == 'all' ||
           inputs.phases == '1-to-3'
         run: |
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Phase 2: Test Planning"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-          echo "=== Raw JSON from kane-cli context list --json ==="
-          kane-cli context list --json 2>/dev/null || echo "command failed"
-          echo ""
+          Write-Host ""
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+          Write-Host "  Phase 2: Test Planning" -ForegroundColor Green
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+          Write-Host ""
 
-          kane-cli context list --json > all-items.json 2>/dev/null || echo "[]" > all-items.json
+          # Get raw JSON and save it
+          $rawJson = kane-cli context list --json 2>$null
+          $rawJson | Out-File -FilePath "all-items.json" -Encoding utf8
 
-          echo "=== First item (full structure) ==="
-          jq '.[0]' all-items.json 2>/dev/null || echo "jq parse failed"
-          echo ""
+          Write-Host "=== Raw JSON from kane-cli context list --json ===" -ForegroundColor Yellow
+          Write-Host $rawJson
+          Write-Host ""
 
-          echo "=== All keys in first item ==="
-          jq '.[0] | keys' all-items.json 2>/dev/null || echo "no keys found"
-          echo ""
+          # Parse and inspect structure
+          try {
+            $items = $rawJson | ConvertFrom-Json
+            if ($items.Count -gt 0) {
+              Write-Host "=== First item (full structure) ===" -ForegroundColor Yellow
+              $items[0] | ConvertTo-Json -Depth 5
+              Write-Host ""
 
-          echo "=== All refs/ids/slugs ==="
-          jq -r '.[] | "ref=\(.ref // "null") id=\(.id // "null") slug=\(.slug // "null") name=\(.name // "null") type=\(.type // "null")"' all-items.json 2>/dev/null || echo "field extraction failed"
-          echo ""
+              Write-Host "=== All property names in first item ===" -ForegroundColor Yellow
+              $items[0].PSObject.Properties.Name
+              Write-Host ""
+
+              Write-Host "=== All items summary ===" -ForegroundColor Yellow
+              foreach ($item in $items) {
+                $ref = if ($item.PSObject.Properties['ref']) { $item.ref } 
+                       elseif ($item.PSObject.Properties['id']) { $item.id }
+                       elseif ($item.PSObject.Properties['slug']) { $item.slug }
+                       else { "UNKNOWN" }
+                $type = if ($item.PSObject.Properties['type']) { $item.type } else { "no-type" }
+                Write-Host "  ref=$ref  type=$type"
+              }
+            } else {
+              Write-Host "No items in graph"
+            }
+          } catch {
+            Write-Host "Could not parse JSON: $_"
+          }
 
       - name: "Phase 2 · Review and approve use-cases"
         if: >-
           inputs.phases == 'all' ||
           inputs.phases == '1-to-3'
         run: |
-          # Build verdicts trying every possible field name
-          jq '[.[] | {ref: (.ref // .id // .slug // .name), resolution: "approved"} | select(.ref != null)]' \
-            all-items.json > verdicts.json 2>/dev/null || echo "[]" > verdicts.json
+          # Read the saved JSON
+          $rawJson = Get-Content "all-items.json" -Raw -ErrorAction SilentlyContinue
+          if (-not $rawJson) {
+            $rawJson = kane-cli context list --json 2>$null
+          }
 
-          echo "=== Verdicts to submit ==="
-          cat verdicts.json
-          echo ""
+          try {
+            $items = $rawJson | ConvertFrom-Json
 
-          ITEM_COUNT=$(jq 'length' verdicts.json 2>/dev/null || echo "0")
+            # Build verdicts — try ref, then id, then slug, then name
+            $verdicts = @()
+            foreach ($item in $items) {
+              $refValue = $null
+              foreach ($field in @('ref', 'id', 'slug', 'name')) {
+                if ($item.PSObject.Properties[$field] -and $item.$field) {
+                  $refValue = $item.$field
+                  break
+                }
+              }
+              if ($refValue) {
+                $verdicts += @{ ref = $refValue; resolution = "approved" }
+              }
+            }
 
-          if [ "$ITEM_COUNT" -gt "0" ]; then
-            echo "Approving $ITEM_COUNT items..."
-            kane-cli context review --verdicts verdicts.json \
-              || echo "Review completed (some items may already be approved)"
-          else
-            echo "⚠️ No items to approve — check the debug output above"
-          fi
+            if ($verdicts.Count -gt 0) {
+              Write-Host "Approving $($verdicts.Count) items..."
+              $verdicts | ConvertTo-Json -Depth 3 | Out-File -FilePath "verdicts.json" -Encoding utf8
+
+              Write-Host "=== Verdicts ===" -ForegroundColor Yellow
+              Get-Content "verdicts.json"
+              Write-Host ""
+
+              kane-cli context review --verdicts verdicts.json
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "Review completed (some items may already be approved)"
+              }
+            } else {
+              Write-Host "No items to approve"
+            }
+          } catch {
+            Write-Host "Could not build verdicts: $_"
+            Write-Host "Skipping review — design will use --allow-unreviewed"
+          }
 
       - name: "Phase 2 · Coverage gaps"
         if: >-
           inputs.phases == 'all' ||
           inputs.phases == '1-to-3'
         run: |
-          echo ""
-          echo "── Coverage gaps (pre-design) ──"
-          kane-cli cover gaps 2>/dev/null || echo "Gaps will appear after test design"
+          Write-Host ""
+          Write-Host "── Coverage gaps (pre-design) ──" -ForegroundColor Cyan
+          kane-cli cover gaps 2>$null
+          if ($LASTEXITCODE -ne 0) { Write-Host "Gaps will appear after test design" }
 
       - name: "Phase 2 · Graph after review"
         if: >-
@@ -220,83 +262,142 @@ jobs:
           inputs.phases == 'all' ||
           inputs.phases == '1-to-3'
         run: |
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Phase 3: Test Design"
-          echo "  Max tests per use-case: ${{ inputs.max_tests }}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
+          Write-Host ""
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+          Write-Host "  Phase 3: Test Design" -ForegroundColor Green
+          Write-Host "  Max tests per use-case: ${{ inputs.max_tests }}"
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+          Write-Host ""
 
-          MAX=${{ inputs.max_tests }}
-          kane-cli context list --json > graph.json 2>/dev/null || echo "[]" > graph.json
+          $max = "${{ inputs.max_tests }}"
+          $rawJson = kane-cli context list --json 2>$null
+          $rawJson | Out-File -FilePath "graph.json" -Encoding utf8
 
-          # Try to find use-case refs using multiple field names
-          USECASES=$(jq -r '.[] | select(
-            .type == "use-case" or
-            .type == "use_case" or
-            (.ref // "" | startswith("uc-")) or
-            (.id // "" | startswith("uc-")) or
-            (.slug // "" | startswith("uc-"))
-          ) | .ref // .id // .slug // empty' graph.json 2>/dev/null || true)
+          try {
+            $items = $rawJson | ConvertFrom-Json
+            
+            # Find use-case refs using multiple strategies
+            $usecases = @()
+            foreach ($item in $items) {
+              $refValue = $null
+              foreach ($field in @('ref', 'id', 'slug')) {
+                if ($item.PSObject.Properties[$field] -and $item.$field) {
+                  $refValue = $item.$field
+                  break
+                }
+              }
+              
+              if (-not $refValue) { continue }
 
-          if [ -z "$USECASES" ]; then
-            echo "Fallback: grep uc- from all fields"
-            USECASES=$(jq -r '.[] | .ref // .id // .slug // .name // empty' graph.json 2>/dev/null | grep '^uc-' || true)
-          fi
+              # Check if it's a use-case by type or ref prefix
+              $isUseCase = $false
+              if ($item.PSObject.Properties['type']) {
+                if ($item.type -in @('use-case', 'use_case', 'usecase')) {
+                  $isUseCase = $true
+                }
+              }
+              if ($refValue -like 'uc-*') {
+                $isUseCase = $true
+              }
+              
+              if ($isUseCase) {
+                $usecases += $refValue
+              }
+            }
 
-          if [ -z "$USECASES" ]; then
-            echo "Last resort: use all items"
-            USECASES=$(jq -r '.[] | .ref // .id // .slug // empty' graph.json 2>/dev/null || true)
-          fi
+            # Fallback: if no type-based matches, try all refs starting with uc-
+            if ($usecases.Count -eq 0) {
+              Write-Host "No type-based matches — trying uc- prefix on all items"
+              foreach ($item in $items) {
+                foreach ($field in @('ref', 'id', 'slug', 'name')) {
+                  if ($item.PSObject.Properties[$field] -and $item.$field -like 'uc-*') {
+                    $usecases += $item.$field
+                    break
+                  }
+                }
+              }
+            }
 
-          if [ -z "$USECASES" ]; then
-            echo "⚠️ No use-cases found. Full graph:"
-            cat graph.json
-          else
-            echo "Use-cases to design:"
-            echo "$USECASES"
-            echo ""
+            # Last resort: try all items
+            if ($usecases.Count -eq 0) {
+              Write-Host "Last resort: trying all items as use-cases"
+              foreach ($item in $items) {
+                foreach ($field in @('ref', 'id', 'slug')) {
+                  if ($item.PSObject.Properties[$field] -and $item.$field) {
+                    $usecases += $item.$field
+                    break
+                  }
+                }
+              }
+            }
 
-            TOTAL=$(echo "$USECASES" | wc -l | tr -d ' ')
-            CURRENT=0
-            for UC in $USECASES; do
-              CURRENT=$((CURRENT + 1))
-              echo "── [$CURRENT/$TOTAL] Designing: $UC (max $MAX) ──"
-              kane-cli design tests \
-                --use-case "$UC" \
-                --mode override \
-                --max "$MAX" \
-                --allow-unreviewed \
-                || echo "⚠️ Design for $UC completed with warnings"
-              echo ""
-            done
-          fi
+            if ($usecases.Count -eq 0) {
+              Write-Host "No use-cases found. Full graph:" -ForegroundColor Yellow
+              Get-Content "graph.json"
+            } else {
+              Write-Host "Use-cases to design:"
+              $usecases | ForEach-Object { Write-Host "  $_" }
+              Write-Host ""
+
+              $total = $usecases.Count
+              $current = 0
+              foreach ($uc in $usecases) {
+                $current++
+                Write-Host "── [$current/$total] Designing: $uc (max $max) ──" -ForegroundColor Cyan
+                kane-cli design tests --use-case $uc --mode override --max $max --allow-unreviewed
+                if ($LASTEXITCODE -ne 0) {
+                  Write-Host "Design for $uc completed with warnings" -ForegroundColor Yellow
+                }
+                Write-Host ""
+              }
+            }
+          } catch {
+            Write-Host "Error processing graph: $_" -ForegroundColor Red
+          }
 
       - name: "Phase 3 · Approve designed tests"
         if: >-
           inputs.phases == 'all' ||
           inputs.phases == '1-to-3'
         run: |
-          kane-cli context list --json > all-items.json 2>/dev/null || echo "[]" > all-items.json
-          jq '[.[] | {ref: (.ref // .id // .slug // .name), resolution: "approved"} | select(.ref != null)]' \
-            all-items.json > verdicts.json 2>/dev/null || echo "[]" > verdicts.json
-          ITEM_COUNT=$(jq 'length' verdicts.json 2>/dev/null || echo "0")
-          if [ "$ITEM_COUNT" -gt "0" ]; then
-            kane-cli context review --verdicts verdicts.json || echo "Review completed"
-          fi
+          $rawJson = kane-cli context list --json 2>$null
+          try {
+            $items = $rawJson | ConvertFrom-Json
+            $verdicts = @()
+            foreach ($item in $items) {
+              $refValue = $null
+              foreach ($field in @('ref', 'id', 'slug', 'name')) {
+                if ($item.PSObject.Properties[$field] -and $item.$field) {
+                  $refValue = $item.$field
+                  break
+                }
+              }
+              if ($refValue) {
+                $verdicts += @{ ref = $refValue; resolution = "approved" }
+              }
+            }
+            if ($verdicts.Count -gt 0) {
+              $verdicts | ConvertTo-Json -Depth 3 | Out-File -FilePath "verdicts.json" -Encoding utf8
+              kane-cli context review --verdicts verdicts.json
+              if ($LASTEXITCODE -ne 0) { Write-Host "Review completed" }
+            }
+          } catch {
+            Write-Host "Review skipped: $_"
+          }
 
       - name: "Phase 3 · List test files"
         if: >-
           inputs.phases == 'all' ||
           inputs.phases == '1-to-3'
         run: |
-          echo "── Designed test files ──"
-          if [ -d ".testmuai/tests" ]; then
-            find .testmuai/tests -name '*_test.md' | sort
-            echo "Total: $(find .testmuai/tests -name '*_test.md' | wc -l | tr -d ' ') test files"
-          else
-            echo "No test files generated"
-          fi
+          Write-Host "── Designed test files ──" -ForegroundColor Cyan
+          if (Test-Path ".testmuai/tests") {
+            $files = Get-ChildItem -Path ".testmuai/tests" -Filter "*_test.md" -Recurse
+            $files | ForEach-Object { Write-Host "  $($_.FullName)" }
+            Write-Host "Total: $($files.Count) test files"
+          } else {
+            Write-Host "No test files generated"
+          }
 
       # ─────────────────────────────────────────────────────
       # PHASE 4: Test Development (VISIBLE Chrome!)
@@ -306,31 +407,35 @@ jobs:
           (inputs.phases == 'all' || inputs.phases == '4-to-5')
           && inputs.app_url != 'skip'
         run: |
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Phase 4: Test Development"
-          echo "  App: ${{ inputs.app_url }}"
-          echo "  >>> Chrome will open on your desktop! <<<"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-          TESTS=$(find .testmuai/tests -name '*_test.md' 2>/dev/null | head -3)
-          if [ -z "$TESTS" ]; then
-            echo "No test files — skipping"
-            exit 0
-          fi
-          for TEST in $TESTS; do
-            echo "── Authoring: $(basename $TEST) ──"
-            kane-cli testmd run "$TEST" \
-              --url "${{ inputs.app_url }}" \
-              || echo "⚠️ Authoring completed with issues"
-            echo ""
-          done
+          Write-Host ""
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+          Write-Host "  Phase 4: Test Development" -ForegroundColor Green
+          Write-Host "  App: ${{ inputs.app_url }}"
+          Write-Host "  >>> Chrome will open on your desktop! <<<" -ForegroundColor Yellow
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+          Write-Host ""
+
+          if (Test-Path ".testmuai/tests") {
+            $tests = Get-ChildItem -Path ".testmuai/tests" -Filter "*_test.md" -Recurse | Select-Object -First 3
+            if ($tests.Count -eq 0) {
+              Write-Host "No test files found — skipping"
+              exit 0
+            }
+            foreach ($test in $tests) {
+              Write-Host "── Authoring: $($test.Name) ──" -ForegroundColor Cyan
+              kane-cli testmd run $test.FullName --url "${{ inputs.app_url }}"
+              if ($LASTEXITCODE -ne 0) { Write-Host "Authoring completed with issues" -ForegroundColor Yellow }
+              Write-Host ""
+            }
+          } else {
+            Write-Host "No .testmuai/tests directory — run phase 3 first"
+          }
 
       - name: "Phase 4 · Skipped"
         if: >-
           (inputs.phases == 'all' || inputs.phases == '4-to-5')
           && inputs.app_url == 'skip'
-        run: echo "Phase 4 skipped — set app_url to a live URL to enable"
+        run: Write-Host "Phase 4 skipped — set app_url to a live URL to enable"
 
       # ─────────────────────────────────────────────────────
       # PHASE 5: Test Execution (VISIBLE Chrome!)
@@ -340,22 +445,20 @@ jobs:
           (inputs.phases == 'all' || inputs.phases == '4-to-5')
           && inputs.app_url != 'skip'
         run: |
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Phase 5: Test Execution"
-          echo "  >>> Chrome will open on your desktop! <<<"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-          kane-cli testrun run \
-            --match 't-' \
-            --url "${{ inputs.app_url }}" \
-            || echo "⚠️ Some tests may have failed"
+          Write-Host ""
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+          Write-Host "  Phase 5: Test Execution" -ForegroundColor Green
+          Write-Host "  >>> Chrome will open on your desktop! <<<" -ForegroundColor Yellow
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+          Write-Host ""
+          kane-cli testrun run --match "t-" --url "${{ inputs.app_url }}"
+          if ($LASTEXITCODE -ne 0) { Write-Host "Some tests may have failed — check evidence" -ForegroundColor Yellow }
 
       - name: "Phase 5 · Skipped"
         if: >-
           (inputs.phases == 'all' || inputs.phases == '4-to-5')
           && inputs.app_url == 'skip'
-        run: echo "Phase 5 skipped — set app_url to a live URL to enable"
+        run: Write-Host "Phase 5 skipped — set app_url to a live URL to enable"
 
       # ─────────────────────────────────────────────────────
       # PHASE 6: Coverage & Reporting
@@ -365,24 +468,31 @@ jobs:
           inputs.phases == 'all' ||
           inputs.phases == '6-coverage'
         run: |
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Phase 6: Coverage & Reporting"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-          echo "── Coverage panel ──"
-          kane-cli cover 2>/dev/null || echo "No evidence packs yet"
-          echo ""
-          echo "── Coverage gaps ──"
-          kane-cli cover gaps 2>/dev/null || echo "No gaps to report"
+          Write-Host ""
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+          Write-Host "  Phase 6: Coverage & Reporting" -ForegroundColor Green
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+          Write-Host ""
+          Write-Host "── Coverage panel ──" -ForegroundColor Cyan
+          kane-cli cover 2>$null
+          if ($LASTEXITCODE -ne 0) { Write-Host "No evidence packs yet" }
+          Write-Host ""
+          Write-Host "── Coverage gaps ──" -ForegroundColor Cyan
+          kane-cli cover gaps 2>$null
+          if ($LASTEXITCODE -ne 0) { Write-Host "No gaps to report" }
 
       - name: "Phase 6 · Save JSON"
         if: >-
           inputs.phases == 'all' ||
           inputs.phases == '6-coverage'
         run: |
-          kane-cli cover --json > coverage.json 2>/dev/null || echo "{}" > coverage.json
-          kane-cli cover gaps --json > coverage-gaps.json 2>/dev/null || echo "[]" > coverage-gaps.json
+          $cover = kane-cli cover --json 2>$null
+          if ($cover) { $cover | Out-File -FilePath "coverage.json" -Encoding utf8 }
+          else { '{}' | Out-File -FilePath "coverage.json" -Encoding utf8 }
+
+          $gaps = kane-cli cover gaps --json 2>$null
+          if ($gaps) { $gaps | Out-File -FilePath "coverage-gaps.json" -Encoding utf8 }
+          else { '[]' | Out-File -FilePath "coverage-gaps.json" -Encoding utf8 }
 
       # ─────────────────────────────────────────────────────
       # PHASE 7: Maintenance
@@ -390,35 +500,36 @@ jobs:
       - name: "Phase 7 · Reconcile PRD change"
         if: inputs.phases == '7-maintenance'
         run: |
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Phase 7: Maintenance"
-          echo "  Reconciling: ${{ inputs.v2_prd }}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
+          Write-Host ""
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+          Write-Host "  Phase 7: Maintenance" -ForegroundColor Green
+          Write-Host "  Reconciling: ${{ inputs.v2_prd }}"
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+          Write-Host ""
 
-          echo "── BEFORE reconcile ──"
-          kane-cli context list 2>/dev/null || echo "Empty graph"
-          echo ""
+          Write-Host "── BEFORE reconcile ──" -ForegroundColor Cyan
+          kane-cli context list 2>$null
+          if ($LASTEXITCODE -ne 0) { Write-Host "Empty graph" }
+          Write-Host ""
 
-          kane-cli maintain reconcile \
-            --from "./${{ inputs.v2_prd }}" \
-            --source-id "${{ inputs.source_id }}" \
-            --mode override \
-            || echo "⚠️ Reconcile completed with warnings"
+          kane-cli maintain reconcile --from "./${{ inputs.v2_prd }}" --source-id "${{ inputs.source_id }}" --mode override
+          if ($LASTEXITCODE -ne 0) { Write-Host "Reconcile completed with warnings" -ForegroundColor Yellow }
 
-          echo ""
-          echo "── AFTER reconcile ──"
+          Write-Host ""
+          Write-Host "── AFTER reconcile ──" -ForegroundColor Cyan
           kane-cli context list
 
-          echo ""
-          echo "── Coverage gaps after reconcile ──"
-          kane-cli cover gaps 2>/dev/null || echo "No gaps"
+          Write-Host ""
+          Write-Host "── Coverage gaps after reconcile ──" -ForegroundColor Cyan
+          kane-cli cover gaps 2>$null
+          if ($LASTEXITCODE -ne 0) { Write-Host "No gaps" }
 
       # ── Save state & artifacts ──────────────────────────
       - name: "Generate context graph"
         if: always()
-        run: kane-cli context view --output context-graph.html 2>/dev/null || true
+        run: |
+          kane-cli context view --output context-graph.html 2>$null
+          if ($LASTEXITCODE -ne 0) { Write-Host "Graph generation skipped" }
 
       - name: "Save to cache"
         if: always()
@@ -432,10 +543,10 @@ jobs:
       - name: "Summary"
         if: always()
         run: |
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  ✅ Run complete: ${{ inputs.phases }}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          Write-Host ""
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+          Write-Host "  Run complete: ${{ inputs.phases }}" -ForegroundColor Green
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
 
       - name: "Upload artifacts"
         if: always()
