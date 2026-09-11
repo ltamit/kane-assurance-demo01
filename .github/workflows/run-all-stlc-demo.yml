@@ -6,6 +6,7 @@ name: "Run All · Full STLC Demo"
 # the prospect can see clear boundaries in the Actions UI.
 #
 # This is the "one-click full demo" workflow.
+# Trigger manually: Actions → Run All · Full STLC Demo → Run workflow
 # ─────────────────────────────────────────────────────────
 
 on:
@@ -41,8 +42,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '20' }
+        with: { node-version: '22' }
       - run: npm install -g @testmuai/kane-cli
+      - run: kane-cli install skill || true
       - run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
       - uses: actions/cache@v4
         with:
@@ -66,15 +68,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '20' }
+        with: { node-version: '22' }
       - run: npm install -g @testmuai/kane-cli
+      - run: kane-cli install skill || true
       - run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
       - uses: actions/download-artifact@v4
         with: { name: phase-1-output, path: .context/ }
+
       - name: "Review: Approve all use-cases"
-        run: kane-cli context review --approve-all --mode ci || true
+        run: |
+          echo "Building verdicts from all graph items..."
+          kane-cli context list --json > /tmp/all-items.json 2>/dev/null || echo "[]" > /tmp/all-items.json
+          echo "Items in graph:"
+          cat /tmp/all-items.json | jq '.' 2>/dev/null || cat /tmp/all-items.json
+
+          jq '[.[] | select(.ref != null) | {ref: .ref, resolution: "approved"}]' /tmp/all-items.json > /tmp/verdicts.json 2>/dev/null || echo "[]" > /tmp/verdicts.json
+          ITEM_COUNT=$(jq 'length' /tmp/verdicts.json 2>/dev/null || echo "0")
+
+          if [ "$ITEM_COUNT" -gt "0" ]; then
+            echo "Approving $ITEM_COUNT items..."
+            kane-cli context review --verdicts /tmp/verdicts.json || echo "Review completed (some items may already be approved)"
+          else
+            echo "No items to approve"
+          fi
+
       - name: "Coverage gaps before design"
-        run: kane-cli cover gaps --stage design 2>/dev/null || echo "Design gaps will appear after this phase"
+        run: kane-cli cover gaps 2>/dev/null || echo "Design gaps will appear after this phase"
       - name: "Graph status"
         run: kane-cli context list
       - uses: actions/upload-artifact@v4
@@ -89,27 +108,63 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '20' }
+        with: { node-version: '22' }
       - run: npm install -g @testmuai/kane-cli
+      - run: kane-cli install skill || true
       - run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
       - uses: actions/download-artifact@v4
         with: { name: phase-2-output, path: .context/ }
-      - name: "Design tests for all approved use-cases"
+
+      - name: "Design tests for all use-cases"
         run: |
           MAX=${{ inputs.max_tests }}
-          for UC in $(kane-cli context list --type use-case --trust trusted --json | jq -r '.[].ref // empty' 2>/dev/null); do
+
+          # Get all use-case refs from the graph
+          kane-cli context list --json > /tmp/graph.json 2>/dev/null || echo "[]" > /tmp/graph.json
+
+          # Try to extract use-case refs — adapt jq filter based on actual JSON structure
+          USECASES=$(jq -r '.[] | select(.type == "use-case" or .type == "use_case" or (.ref // "" | startswith("uc-"))) | .ref // .id // empty' /tmp/graph.json 2>/dev/null || true)
+
+          if [ -z "$USECASES" ]; then
+            echo "Could not filter use-cases by type — trying all refs starting with uc-"
+            USECASES=$(jq -r '.[] | .ref // .id // empty' /tmp/graph.json 2>/dev/null | grep '^uc-' || true)
+          fi
+
+          if [ -z "$USECASES" ]; then
+            echo "⚠️ No use-cases found in the graph"
+            echo "Graph contents:"
+            cat /tmp/graph.json | jq '.' 2>/dev/null || cat /tmp/graph.json
+            exit 0
+          fi
+
+          echo "Use-cases found:"
+          echo "$USECASES"
+          echo ""
+
+          for UC in $USECASES; do
             echo "── Designing: $UC (max $MAX) ──"
-            kane-cli design tests --use-case "$UC" --mode override --max "$MAX" || true
+            kane-cli design tests --use-case "$UC" --mode override --max "$MAX" --allow-unreviewed || echo "⚠️ Design for $UC completed with warnings"
+            echo ""
           done
+
       - name: "Approve designed tests"
-        run: kane-cli context review --approve-all --mode ci || true
+        run: |
+          kane-cli context list --json > /tmp/all-items.json 2>/dev/null || echo "[]" > /tmp/all-items.json
+          jq '[.[] | select(.ref != null) | {ref: .ref, resolution: "approved"}]' /tmp/all-items.json > /tmp/verdicts.json 2>/dev/null || echo "[]" > /tmp/verdicts.json
+          ITEM_COUNT=$(jq 'length' /tmp/verdicts.json 2>/dev/null || echo "0")
+          if [ "$ITEM_COUNT" -gt "0" ]; then
+            kane-cli context review --verdicts /tmp/verdicts.json || echo "Review completed"
+          fi
+
       - name: "List test files"
         run: find .testmuai/tests -name '*_test.md' 2>/dev/null | sort || echo "No test files"
       - uses: actions/upload-artifact@v4
-        with: { name: phase-3-output, path: |
+        with:
+          name: phase-3-output
+          retention-days: 7
+          path: |
             .context/
             .testmuai/tests/
-          , retention-days: 7 }
 
   # ── Phase 4: Test Development ──────────────────────────
   phase-4-development:
@@ -120,25 +175,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '20' }
+        with: { node-version: '22' }
       - run: npm install -g @testmuai/kane-cli
+      - run: kane-cli install skill || true
       - run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
-      - run: |
+      - name: Install Google Chrome
+        run: |
           wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get -f install -y
       - uses: actions/download-artifact@v4
         with: { name: phase-3-output, path: . }
       - name: "Author tests (first 3)"
         run: |
-          for TEST in $(find .testmuai/tests -name '*_test.md' | head -3); do
+          TESTS=$(find .testmuai/tests -name '*_test.md' 2>/dev/null | head -3)
+          if [ -z "$TESTS" ]; then
+            echo "No test files found — skipping authoring"
+            exit 0
+          fi
+          for TEST in $TESTS; do
             echo "── Authoring: $(basename $TEST) ──"
             kane-cli testmd run "$TEST" --url "${{ inputs.app_url }}" --headless || true
           done
       - uses: actions/upload-artifact@v4
-        with: { name: phase-4-output, path: |
+        with:
+          name: phase-4-output
+          retention-days: 7
+          path: |
             .context/
             .testmuai/
-          , retention-days: 7 }
 
   # ── Phase 5: Test Execution ────────────────────────────
   phase-5-execution:
@@ -149,10 +213,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '20' }
+        with: { node-version: '22' }
       - run: npm install -g @testmuai/kane-cli
+      - run: kane-cli install skill || true
       - run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
-      - run: |
+      - name: Install Google Chrome
+        run: |
           wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get -f install -y
       - uses: actions/download-artifact@v4
@@ -160,10 +226,12 @@ jobs:
       - name: "Batch replay"
         run: kane-cli testrun run --match 't-' --url "${{ inputs.app_url }}" --headless || true
       - uses: actions/upload-artifact@v4
-        with: { name: phase-5-output, path: |
+        with:
+          name: phase-5-output
+          retention-days: 7
+          path: |
             .context/
             .testmuai/
-          , retention-days: 7 }
 
   # ── Phase 6: Coverage & Reporting ──────────────────────
   phase-6-coverage:
@@ -174,8 +242,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '20' }
+        with: { node-version: '22' }
       - run: npm install -g @testmuai/kane-cli
+      - run: kane-cli install skill || true
       - run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
       - uses: actions/download-artifact@v4
         with: { name: phase-5-output, path: . }
@@ -192,11 +261,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: phase-6-coverage
+          retention-days: 7
           path: |
             coverage.json
             coverage-gaps.json
             context-graph.html
-          retention-days: 7
 
   # ── Summary ────────────────────────────────────────────
   summary:
