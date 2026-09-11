@@ -1,16 +1,32 @@
-name: "Run All · Full STLC Demo"
+name: "Kane CLI Assurance · STLC Demo"
 
 # ─────────────────────────────────────────────────────────
-# Runs all STLC phases in sequence on a SINGLE machine.
-# Each phase is a separate step so the prospect can see
-# clear boundaries in the Actions log.
+# All 7 STLC phases in one workflow, one machine.
+# Pick which phases to run via the dropdown.
 #
-# Trigger manually: Actions → Run All · Full STLC Demo → Run workflow
+# "all"           → runs phases 1-6 end to end
+# "1-requirements" → runs phase 1 only
+# "1-to-3"        → runs phases 1, 2, 3 (no app needed)
+# "4-to-5"        → runs phases 4, 5 (needs app + prior phases)
+# "6-coverage"    → runs phase 6 only (needs prior phases)
+# "7-maintenance"  → runs phase 7 (reconcile against v2 PRD)
 # ─────────────────────────────────────────────────────────
 
 on:
   workflow_dispatch:
     inputs:
+      phases:
+        description: 'Which phases to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - 1-requirements
+          - 1-to-3
+          - 4-to-5
+          - 6-coverage
+          - 7-maintenance
       source_file:
         description: 'PRD file path'
         required: true
@@ -20,53 +36,77 @@ on:
         required: true
         default: 'prd-checkout'
       app_url:
-        description: 'ShopEasy app URL (set to "skip" to skip phases 4-5)'
+        description: 'ShopEasy app URL (needed for phases 4-5, "skip" to skip)'
         required: true
         default: 'skip'
       max_tests:
         description: 'Max tests per use-case'
         required: true
         default: '3'
+      v2_prd:
+        description: 'Updated PRD for phase 7 maintenance demo'
+        required: true
+        default: 'docs/prd-checkout-v2.md'
 
 env:
   LT_USERNAME: ${{ secrets.LT_USERNAME }}
   LT_ACCESS_KEY: ${{ secrets.LT_ACCESS_KEY }}
 
 jobs:
-  full-stlc-demo:
-    name: "Full STLC Pipeline"
+  stlc-demo:
+    name: "STLC Demo · ${{ inputs.phases }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
-      # ── Setup ──────────────────────────────────────────
+      # ── Setup (always runs) ────────────────────────────
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
 
-      - name: "Setup: Install Kane CLI"
+      - name: "Setup · Install Kane CLI"
         run: |
           npm install -g @testmuai/kane-cli
           kane-cli --version
           kane-cli install skill || true
 
-      - name: "Setup: Authenticate"
+      - name: "Setup · Authenticate"
         run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
 
-      - name: "Setup: Install Chrome (for phases 4-5)"
-        if: inputs.app_url != 'skip'
+      - name: "Setup · Install Chrome"
+        if: >-
+          (inputs.phases == 'all' || inputs.phases == '4-to-5')
+          && inputs.app_url != 'skip'
         run: |
           wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get -f install -y
           google-chrome --version
 
-      # ────────────────────────────────────────────────────
+      # Restore .context/ from cache for phases that need prior state
+      - name: "Setup · Restore context graph from cache"
+        if: >-
+          inputs.phases == '4-to-5' ||
+          inputs.phases == '6-coverage' ||
+          inputs.phases == '7-maintenance'
+        uses: actions/cache@v4
+        with:
+          path: |
+            .context/
+            .testmuai/
+          key: stlc-context-${{ inputs.source_id }}-${{ github.run_number }}
+          restore-keys: |
+            stlc-context-${{ inputs.source_id }}-
+
+      # ─────────────────────────────────────────────────────
       # PHASE 1: Requirements Analysis
-      # kane-cli: context ingest + context extract
-      # ────────────────────────────────────────────────────
+      # ─────────────────────────────────────────────────────
       - name: "Phase 1 · Ingest PRD"
+        if: >-
+          inputs.phases == 'all' ||
+          inputs.phases == '1-requirements' ||
+          inputs.phases == '1-to-3'
         run: |
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -79,23 +119,32 @@ jobs:
             --mode ci
 
       - name: "Phase 1 · Extract use-cases"
+        if: >-
+          inputs.phases == 'all' ||
+          inputs.phases == '1-requirements' ||
+          inputs.phases == '1-to-3'
         run: |
-          echo "Extracting use-cases from: ${{ inputs.source_id }}"
           kane-cli context extract \
             --mode override \
             --source "${{ inputs.source_id }}"
 
-      - name: "Phase 1 · Show extracted use-cases"
+      - name: "Phase 1 · Results"
+        if: >-
+          inputs.phases == 'all' ||
+          inputs.phases == '1-requirements' ||
+          inputs.phases == '1-to-3'
         run: |
           echo ""
           echo "── Extracted use-cases ──"
           kane-cli context list
 
-      # ────────────────────────────────────────────────────
+      # ─────────────────────────────────────────────────────
       # PHASE 2: Test Planning
-      # kane-cli: context review + cover gaps
-      # ────────────────────────────────────────────────────
+      # ─────────────────────────────────────────────────────
       - name: "Phase 2 · Review and approve use-cases"
+        if: >-
+          inputs.phases == 'all' ||
+          inputs.phases == '1-to-3'
         run: |
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -103,19 +152,16 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
 
-          # Get all items and build verdicts file
           kane-cli context list --json > /tmp/all-items.json 2>/dev/null || echo "[]" > /tmp/all-items.json
 
           echo "Items in context graph:"
           cat /tmp/all-items.json | jq '.' 2>/dev/null || cat /tmp/all-items.json
           echo ""
 
-          # Build approve-all verdicts
           jq '[.[] | select(.ref != null) | {ref: .ref, resolution: "approved"}]' \
             /tmp/all-items.json > /tmp/verdicts.json 2>/dev/null || echo "[]" > /tmp/verdicts.json
 
           ITEM_COUNT=$(jq 'length' /tmp/verdicts.json 2>/dev/null || echo "0")
-
           if [ "$ITEM_COUNT" -gt "0" ]; then
             echo "Approving $ITEM_COUNT items..."
             kane-cli context review --verdicts /tmp/verdicts.json \
@@ -124,21 +170,28 @@ jobs:
             echo "No items to approve"
           fi
 
-      - name: "Phase 2 · Coverage gaps before design"
+      - name: "Phase 2 · Coverage gaps"
+        if: >-
+          inputs.phases == 'all' ||
+          inputs.phases == '1-to-3'
         run: |
           echo ""
           echo "── Coverage gaps (pre-design) ──"
-          kane-cli cover gaps 2>/dev/null \
-            || echo "Gaps will appear after test design"
+          kane-cli cover gaps 2>/dev/null || echo "Gaps will appear after test design"
 
-      - name: "Phase 2 · Graph status after review"
+      - name: "Phase 2 · Graph after review"
+        if: >-
+          inputs.phases == 'all' ||
+          inputs.phases == '1-to-3'
         run: kane-cli context list
 
-      # ────────────────────────────────────────────────────
+      # ─────────────────────────────────────────────────────
       # PHASE 3: Test Design
-      # kane-cli: design tests
-      # ────────────────────────────────────────────────────
-      - name: "Phase 3 · Design tests for all use-cases"
+      # ─────────────────────────────────────────────────────
+      - name: "Phase 3 · Design tests"
+        if: >-
+          inputs.phases == 'all' ||
+          inputs.phases == '1-to-3'
         run: |
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -148,28 +201,21 @@ jobs:
           echo ""
 
           MAX=${{ inputs.max_tests }}
-
-          # Get all refs from the graph
           kane-cli context list --json > /tmp/graph.json 2>/dev/null || echo "[]" > /tmp/graph.json
 
-          # Try multiple strategies to find use-case refs
           USECASES=$(jq -r '.[] | select(
             .type == "use-case" or
             .type == "use_case" or
             (.ref // "" | startswith("uc-"))
           ) | .ref // .id // empty' /tmp/graph.json 2>/dev/null || true)
 
-          # Fallback: grep for uc- prefixed refs
           if [ -z "$USECASES" ]; then
-            echo "Trying fallback: all refs starting with uc-"
             USECASES=$(jq -r '.[] | .ref // .id // empty' /tmp/graph.json 2>/dev/null | grep '^uc-' || true)
           fi
 
           if [ -z "$USECASES" ]; then
             echo "⚠️ No use-cases found. Graph contents:"
             cat /tmp/graph.json | jq '.' 2>/dev/null || cat /tmp/graph.json
-            echo ""
-            echo "Skipping design phase"
           else
             echo "Use-cases to design:"
             echo "$USECASES"
@@ -177,10 +223,8 @@ jobs:
 
             TOTAL=$(echo "$USECASES" | wc -l | tr -d ' ')
             CURRENT=0
-
             for UC in $USECASES; do
               CURRENT=$((CURRENT + 1))
-              echo ""
               echo "── [$CURRENT/$TOTAL] Designing: $UC (max $MAX) ──"
               kane-cli design tests \
                 --use-case "$UC" \
@@ -188,38 +232,43 @@ jobs:
                 --max "$MAX" \
                 --allow-unreviewed \
                 || echo "⚠️ Design for $UC completed with warnings"
+              echo ""
             done
           fi
 
       - name: "Phase 3 · Approve designed tests"
+        if: >-
+          inputs.phases == 'all' ||
+          inputs.phases == '1-to-3'
         run: |
           kane-cli context list --json > /tmp/all-items.json 2>/dev/null || echo "[]" > /tmp/all-items.json
           jq '[.[] | select(.ref != null) | {ref: .ref, resolution: "approved"}]' \
             /tmp/all-items.json > /tmp/verdicts.json 2>/dev/null || echo "[]" > /tmp/verdicts.json
           ITEM_COUNT=$(jq 'length' /tmp/verdicts.json 2>/dev/null || echo "0")
           if [ "$ITEM_COUNT" -gt "0" ]; then
-            kane-cli context review --verdicts /tmp/verdicts.json \
-              || echo "Review completed"
+            kane-cli context review --verdicts /tmp/verdicts.json || echo "Review completed"
           fi
 
-      - name: "Phase 3 · List designed test files"
+      - name: "Phase 3 · List test files"
+        if: >-
+          inputs.phases == 'all' ||
+          inputs.phases == '1-to-3'
         run: |
-          echo ""
           echo "── Designed test files ──"
           if [ -d ".testmuai/tests" ]; then
             find .testmuai/tests -name '*_test.md' | sort
-            echo ""
             echo "Total: $(find .testmuai/tests -name '*_test.md' | wc -l | tr -d ' ') test files"
           else
             echo "No test files generated"
           fi
 
-      # ────────────────────────────────────────────────────
-      # PHASE 4: Test Development (requires running app)
-      # kane-cli: testmd run
-      # ────────────────────────────────────────────────────
-      - name: "Phase 4 · Author tests in a real browser"
-        if: inputs.app_url != 'skip'
+      # ─────────────────────────────────────────────────────
+      # PHASE 4: Test Development
+      # ─────────────────────────────────────────────────────
+      - name: "Phase 4 · Author tests"
+        if: >-
+          (inputs.phases == 'all' || inputs.phases == '4-to-5')
+          && inputs.app_url != 'skip'
         run: |
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -227,61 +276,51 @@ jobs:
           echo "  App URL: ${{ inputs.app_url }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
-
           TESTS=$(find .testmuai/tests -name '*_test.md' 2>/dev/null | head -3)
           if [ -z "$TESTS" ]; then
             echo "No test files found — skipping"
             exit 0
           fi
-
           for TEST in $TESTS; do
             echo "── Authoring: $(basename $TEST) ──"
-            kane-cli testmd run "$TEST" \
-              --url "${{ inputs.app_url }}" \
-              --headless \
-              || echo "⚠️ Authoring completed with issues"
+            kane-cli testmd run "$TEST" --url "${{ inputs.app_url }}" --headless || true
             echo ""
           done
 
-      - name: "Phase 4 · Skipped (no app URL)"
-        if: inputs.app_url == 'skip'
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Phase 4: Test Development — SKIPPED"
-          echo "  Set app_url to a live URL to enable"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      - name: "Phase 4 · Skipped"
+        if: >-
+          (inputs.phases == 'all' || inputs.phases == '4-to-5')
+          && inputs.app_url == 'skip'
+        run: echo "Phase 4 skipped — set app_url to enable"
 
-      # ────────────────────────────────────────────────────
-      # PHASE 5: Test Execution (requires running app)
-      # kane-cli: testrun run
-      # ────────────────────────────────────────────────────
-      - name: "Phase 5 · Batch replay tests"
-        if: inputs.app_url != 'skip'
+      # ─────────────────────────────────────────────────────
+      # PHASE 5: Test Execution
+      # ─────────────────────────────────────────────────────
+      - name: "Phase 5 · Batch replay"
+        if: >-
+          (inputs.phases == 'all' || inputs.phases == '4-to-5')
+          && inputs.app_url != 'skip'
         run: |
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "  Phase 5: Test Execution"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
-          kane-cli testrun run \
-            --match 't-' \
-            --url "${{ inputs.app_url }}" \
-            --headless \
-            || echo "⚠️ Some tests may have failed — check evidence"
+          kane-cli testrun run --match 't-' --url "${{ inputs.app_url }}" --headless || true
 
-      - name: "Phase 5 · Skipped (no app URL)"
-        if: inputs.app_url == 'skip'
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Phase 5: Test Execution — SKIPPED"
-          echo "  Set app_url to a live URL to enable"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      - name: "Phase 5 · Skipped"
+        if: >-
+          (inputs.phases == 'all' || inputs.phases == '4-to-5')
+          && inputs.app_url == 'skip'
+        run: echo "Phase 5 skipped — set app_url to enable"
 
-      # ────────────────────────────────────────────────────
+      # ─────────────────────────────────────────────────────
       # PHASE 6: Coverage & Reporting
-      # kane-cli: cover + cover gaps
-      # ────────────────────────────────────────────────────
+      # ─────────────────────────────────────────────────────
       - name: "Phase 6 · Coverage report"
+        if: >-
+          inputs.phases == 'all' ||
+          inputs.phases == '6-coverage'
         run: |
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -294,45 +333,78 @@ jobs:
           echo "── Coverage gaps ──"
           kane-cli cover gaps 2>/dev/null || echo "No gaps to report"
 
-      - name: "Phase 6 · Save JSON outputs"
+      - name: "Phase 6 · Save JSON"
+        if: >-
+          inputs.phases == 'all' ||
+          inputs.phases == '6-coverage'
         run: |
           kane-cli cover --json > coverage.json 2>/dev/null || echo "{}" > coverage.json
           kane-cli cover gaps --json > coverage-gaps.json 2>/dev/null || echo "[]" > coverage-gaps.json
 
-      - name: "Phase 6 · Generate context graph"
-        run: kane-cli context view --output context-graph.html 2>/dev/null || true
-
-      # ── Summary & Artifacts ─────────────────────────────
-      - name: "Pipeline complete"
+      # ─────────────────────────────────────────────────────
+      # PHASE 7: Maintenance
+      # ─────────────────────────────────────────────────────
+      - name: "Phase 7 · Reconcile PRD change"
+        if: inputs.phases == '7-maintenance'
         run: |
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Phase 7: Maintenance"
+          echo "  Reconciling: ${{ inputs.v2_prd }}"
+          echo "  Against source: ${{ inputs.source_id }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
-          echo "  ✅ Full STLC demo pipeline complete"
+
+          echo "── Context graph BEFORE reconcile ──"
+          kane-cli context list 2>/dev/null || echo "Empty graph"
           echo ""
-          echo "  Phase 1: Requirements Analysis  ✓"
-          echo "  Phase 2: Test Planning           ✓"
-          echo "  Phase 3: Test Design             ✓"
-          if [ "${{ inputs.app_url }}" != "skip" ]; then
-            echo "  Phase 4: Test Development        ✓"
-            echo "  Phase 5: Test Execution          ✓"
-          else
-            echo "  Phase 4: Test Development        ⏭ skipped"
-            echo "  Phase 5: Test Execution          ⏭ skipped"
-          fi
-          echo "  Phase 6: Coverage & Reporting    ✓"
+
+          kane-cli maintain reconcile \
+            --from "./${{ inputs.v2_prd }}" \
+            --source-id "${{ inputs.source_id }}" \
+            --mode override \
+            || echo "⚠️ Reconcile completed with warnings"
+
           echo ""
-          echo "  Next: Run workflow 7 (Maintenance)"
-          echo "  with prd-checkout-v2.md to see"
-          echo "  how the suite handles PRD changes"
+          echo "── Context graph AFTER reconcile ──"
+          kane-cli context list
+
+          echo ""
+          echo "── Stale items ──"
+          kane-cli context list --stale 2>/dev/null || echo "No stale items"
+
+          echo ""
+          echo "── Coverage gaps after reconcile ──"
+          kane-cli cover gaps 2>/dev/null || echo "No gaps"
+
+      # ── Generate graph & save cache ─────────────────────
+      - name: "Generate context graph visualization"
+        if: always()
+        run: kane-cli context view --output context-graph.html 2>/dev/null || true
+
+      - name: "Save context graph to cache"
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .context/
+            .testmuai/
+          key: stlc-context-${{ inputs.source_id }}-${{ github.run_number }}
+
+      # ── Summary ─────────────────────────────────────────
+      - name: "Summary"
+        if: always()
+        run: |
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Run complete: ${{ inputs.phases }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      - name: Upload artifacts
+      - name: "Upload artifacts"
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: stlc-demo-output-${{ github.run_number }}
+          name: stlc-${{ inputs.phases }}-${{ github.run_number }}
           retention-days: 30
           path: |
             coverage.json
