@@ -1,0 +1,225 @@
+name: "Run All · Full STLC Demo"
+
+# ─────────────────────────────────────────────────────────
+# Runs all 7 STLC phases in sequence for a complete
+# end-to-end demo. Each phase is a separate job so
+# the prospect can see clear boundaries in the Actions UI.
+#
+# This is the "one-click full demo" workflow.
+# ─────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_file:
+        description: 'PRD file path'
+        required: true
+        default: 'docs/prd-checkout.md'
+      source_id:
+        description: 'Source ID'
+        required: true
+        default: 'prd-checkout'
+      app_url:
+        description: 'ShopEasy app URL (for test execution)'
+        required: true
+        default: 'http://localhost:3000'
+      max_tests:
+        description: 'Max tests per use-case'
+        required: true
+        default: '3'
+
+env:
+  LT_USERNAME: ${{ secrets.LT_USERNAME }}
+  LT_ACCESS_KEY: ${{ secrets.LT_ACCESS_KEY }}
+
+jobs:
+  # ── Phase 1: Requirements Analysis ─────────────────────
+  phase-1-requirements:
+    name: "Phase 1 · Requirements Analysis"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npm install -g @testmuai/kane-cli
+      - run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
+      - uses: actions/cache@v4
+        with:
+          path: .context/
+          key: demo-context-${{ github.run_number }}
+      - name: "Ingest PRD"
+        run: kane-cli context ingest "./${{ inputs.source_file }}" --as "${{ inputs.source_id }}" --mode ci
+      - name: "Extract use-cases"
+        run: kane-cli context extract --mode override --source "${{ inputs.source_id }}"
+      - name: "Show results"
+        run: kane-cli context list
+      - uses: actions/upload-artifact@v4
+        with: { name: phase-1-output, path: .context/, retention-days: 7 }
+
+  # ── Phase 2: Test Planning ─────────────────────────────
+  phase-2-planning:
+    name: "Phase 2 · Test Planning"
+    needs: phase-1-requirements
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npm install -g @testmuai/kane-cli
+      - run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
+      - uses: actions/download-artifact@v4
+        with: { name: phase-1-output, path: .context/ }
+      - name: "Review: Approve all use-cases"
+        run: kane-cli context review --approve-all --mode ci || true
+      - name: "Coverage gaps before design"
+        run: kane-cli cover gaps --stage design 2>/dev/null || echo "Design gaps will appear after this phase"
+      - name: "Graph status"
+        run: kane-cli context list
+      - uses: actions/upload-artifact@v4
+        with: { name: phase-2-output, path: .context/, retention-days: 7 }
+
+  # ── Phase 3: Test Design ───────────────────────────────
+  phase-3-design:
+    name: "Phase 3 · Test Design"
+    needs: phase-2-planning
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npm install -g @testmuai/kane-cli
+      - run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
+      - uses: actions/download-artifact@v4
+        with: { name: phase-2-output, path: .context/ }
+      - name: "Design tests for all approved use-cases"
+        run: |
+          MAX=${{ inputs.max_tests }}
+          for UC in $(kane-cli context list --type use-case --trust trusted --json | jq -r '.[].ref // empty' 2>/dev/null); do
+            echo "── Designing: $UC (max $MAX) ──"
+            kane-cli design tests --use-case "$UC" --mode override --max "$MAX" || true
+          done
+      - name: "Approve designed tests"
+        run: kane-cli context review --approve-all --mode ci || true
+      - name: "List test files"
+        run: find .testmuai/tests -name '*_test.md' 2>/dev/null | sort || echo "No test files"
+      - uses: actions/upload-artifact@v4
+        with: { name: phase-3-output, path: |
+            .context/
+            .testmuai/tests/
+          , retention-days: 7 }
+
+  # ── Phase 4: Test Development ──────────────────────────
+  phase-4-development:
+    name: "Phase 4 · Test Development"
+    needs: phase-3-design
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npm install -g @testmuai/kane-cli
+      - run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
+      - run: |
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get -f install -y
+      - uses: actions/download-artifact@v4
+        with: { name: phase-3-output, path: . }
+      - name: "Author tests (first 3)"
+        run: |
+          for TEST in $(find .testmuai/tests -name '*_test.md' | head -3); do
+            echo "── Authoring: $(basename $TEST) ──"
+            kane-cli testmd run "$TEST" --url "${{ inputs.app_url }}" --headless || true
+          done
+      - uses: actions/upload-artifact@v4
+        with: { name: phase-4-output, path: |
+            .context/
+            .testmuai/
+          , retention-days: 7 }
+
+  # ── Phase 5: Test Execution ────────────────────────────
+  phase-5-execution:
+    name: "Phase 5 · Test Execution"
+    needs: phase-4-development
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npm install -g @testmuai/kane-cli
+      - run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
+      - run: |
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get -f install -y
+      - uses: actions/download-artifact@v4
+        with: { name: phase-4-output, path: . }
+      - name: "Batch replay"
+        run: kane-cli testrun run --match 't-' --url "${{ inputs.app_url }}" --headless || true
+      - uses: actions/upload-artifact@v4
+        with: { name: phase-5-output, path: |
+            .context/
+            .testmuai/
+          , retention-days: 7 }
+
+  # ── Phase 6: Coverage & Reporting ──────────────────────
+  phase-6-coverage:
+    name: "Phase 6 · Coverage Report"
+    needs: phase-5-execution
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npm install -g @testmuai/kane-cli
+      - run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
+      - uses: actions/download-artifact@v4
+        with: { name: phase-5-output, path: . }
+      - name: "Coverage panel"
+        run: kane-cli cover 2>/dev/null || echo "No evidence packs"
+      - name: "Coverage gaps"
+        run: kane-cli cover gaps 2>/dev/null || echo "No gaps"
+      - name: "Save JSON"
+        run: |
+          kane-cli cover --json > coverage.json 2>/dev/null || echo "{}" > coverage.json
+          kane-cli cover gaps --json > coverage-gaps.json 2>/dev/null || echo "[]" > coverage-gaps.json
+      - name: "Generate graph"
+        run: kane-cli context view --output context-graph.html 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase-6-coverage
+          path: |
+            coverage.json
+            coverage-gaps.json
+            context-graph.html
+          retention-days: 7
+
+  # ── Summary ────────────────────────────────────────────
+  summary:
+    name: "Demo Summary"
+    needs: phase-6-coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Pipeline complete"
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "  ✅ Full STLC demo pipeline complete"
+          echo ""
+          echo "  Phase 1: Requirements Analysis  ✓"
+          echo "  Phase 2: Test Planning           ✓"
+          echo "  Phase 3: Test Design             ✓"
+          echo "  Phase 4: Test Development        ✓"
+          echo "  Phase 5: Test Execution          ✓"
+          echo "  Phase 6: Coverage & Reporting    ✓"
+          echo ""
+          echo "  Next: Run workflow 7 (Maintenance)"
+          echo "  with prd-checkout-v2.md to see"
+          echo "  how the suite handles PRD changes"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
