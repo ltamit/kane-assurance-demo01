@@ -268,8 +268,28 @@ jobs:
             exit 1
           }
 
-          $rawJson = kane-cli context list --json 2>$null
+          $rawJson = kane-cli context list --json 2>graph-stderr.log
+          $exitCode = $LASTEXITCODE
           $rawJson | Out-File -FilePath "graph.json" -Encoding utf8
+
+          Write-Host "=== Raw output from context list --json ===" -ForegroundColor Yellow
+          Write-Host $rawJson
+          if (Test-Path "graph-stderr.log") {
+            $stderrContent = Get-Content "graph-stderr.log" -Raw
+            if ($stderrContent) {
+              Write-Host "=== stderr ===" -ForegroundColor Yellow
+              Write-Host $stderrContent
+            }
+          }
+          Write-Host "=== exit code: $exitCode ===" -ForegroundColor Yellow
+          Write-Host ""
+
+          if ($exitCode -ne 0) {
+            Write-Host "ERROR: kane-cli context list failed (exit $exitCode)" -ForegroundColor Red
+            Write-Host "Likely causes: session expired, or phases 1-2 have not run yet on this machine" -ForegroundColor Red
+            Write-Host "Try: kane-cli login again, or re-run phase 1 and 2 first" -ForegroundColor Red
+            exit 1
+          }
 
           try {
             $items = $rawJson | ConvertFrom-Json
@@ -330,7 +350,10 @@ jobs:
               }
             }
           } catch {
-            Write-Host "Error processing graph: $_" -ForegroundColor Red
+            Write-Host "ERROR: Could not parse graph JSON: $_" -ForegroundColor Red
+            Write-Host "Raw content that failed to parse:" -ForegroundColor Red
+            Write-Host $rawJson
+            exit 1
           }
 
       - name: "Phase 3 - Approve designed tests"
