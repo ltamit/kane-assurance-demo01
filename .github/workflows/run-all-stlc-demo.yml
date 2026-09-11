@@ -68,40 +68,40 @@ jobs:
       # ── Setup ──────────────────────────────────────────
       - uses: actions/checkout@v4
 
-      - name: "Setup · Verify prerequisites"
-        run: |
-          Write-Host "── Checking prerequisites ──" -ForegroundColor Cyan
-          Write-Host "Node: $(node --version 2>$null)"
-          Write-Host "npm: $(npm --version 2>$null)"
-          Write-Host "Kane CLI: $(kane-cli --version 2>$null)"
-          Write-Host "OS: $([System.Environment]::OSVersion.VersionString)"
-          Write-Host ""
+      # - name: "Setup · Verify prerequisites"
+      #   run: |
+      #     Write-Host "── Checking prerequisites ──" -ForegroundColor Cyan
+      #     Write-Host "Node: $(node --version 2>$null)"
+      #     Write-Host "npm: $(npm --version 2>$null)"
+      #     Write-Host "Kane CLI: $(kane-cli --version 2>$null)"
+      #     Write-Host "OS: $([System.Environment]::OSVersion.VersionString)"
+      #     Write-Host ""
 
-      - name: "Setup · Install/update Kane CLI"
-        run: |
-          npm install -g @testmuai/kane-cli
-          kane-cli --version
-          kane-cli install skill 2>$null
-          if ($LASTEXITCODE -ne 0) { Write-Host "Skill install skipped" }
+      # - name: "Setup · Install/update Kane CLI"
+      #   run: |
+      #     npm install -g @testmuai/kane-cli
+      #     kane-cli --version
+      #     kane-cli install skill 2>$null
+      #     if ($LASTEXITCODE -ne 0) { Write-Host "Skill install skipped" }
 
-      - name: "Setup · Authenticate"
-        run: |
-          kane-cli login --username "${{ secrets.LT_USERNAME }}" --access-key "${{ secrets.LT_ACCESS_KEY }}"
+      # - name: "Setup · Authenticate"
+      #   run: |
+      #     kane-cli login --username "${{ secrets.LT_USERNAME }}" --access-key "${{ secrets.LT_ACCESS_KEY }}"
 
-      # Restore .context/ from cache for phases that need prior state
-      - name: "Setup · Restore context graph from cache"
-        if: >-
-          inputs.phases == '4-to-5' ||
-          inputs.phases == '6-coverage' ||
-          inputs.phases == '7-maintenance'
-        uses: actions/cache@v4
-        with:
-          path: |
-            .context/
-            .testmuai/
-          key: stlc-context-${{ inputs.source_id }}-${{ github.run_number }}
-          restore-keys: |
-            stlc-context-${{ inputs.source_id }}-
+      # # Restore .context/ from cache for phases that need prior state
+      # - name: "Setup · Restore context graph from cache"
+      #   if: >-
+      #     inputs.phases == '4-to-5' ||
+      #     inputs.phases == '6-coverage' ||
+      #     inputs.phases == '7-maintenance'
+      #   uses: actions/cache@v4
+      #   with:
+      #     path: |
+      #       .context/
+      #       .testmuai/
+      #     key: stlc-context-${{ inputs.source_id }}-${{ github.run_number }}
+      #     restore-keys: |
+      #       stlc-context-${{ inputs.source_id }}-
 
       # ─────────────────────────────────────────────────────
       # PHASE 1: Requirements Analysis
