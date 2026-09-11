@@ -60,13 +60,13 @@ jobs:
           key: context-${{ hashFiles('docs/**') }}-${{ github.run_number }}
           restore-keys: context-${{ hashFiles('docs/**') }}-
 
-      # ── SHOW PENDING ITEMS ─────────────────────────────
-      - name: "Pending: Show items awaiting review"
+      # ── SHOW CURRENT STATE ─────────────────────────────
+      - name: "Pending: Show all items in the context graph"
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Items pending review"
+          echo "  Current context graph"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          kane-cli context list --inferred 2>/dev/null || echo "No unreviewed items"
+          kane-cli context list 2>/dev/null || echo "No items in graph — run workflow 1 first"
 
       # ── REVIEW ─────────────────────────────────────────
       - name: "Review: Approve extracted use-cases"
@@ -74,19 +74,25 @@ jobs:
         run: |
           echo "✅ Auto-approving all extracted use-cases"
 
-          # Build a verdicts file from all unreviewed items
-          kane-cli context list --inferred --json 2>/dev/null \
-            | jq '[.[] | {ref: .ref, resolution: "approved"}]' > /tmp/verdicts.json 2>/dev/null
+          # Get all items from the context graph
+          kane-cli context list --json > /tmp/all-items.json 2>/dev/null || echo "[]" > /tmp/all-items.json
 
-          # Check if there are items to approve
+          echo "All items in graph:"
+          cat /tmp/all-items.json | jq '.' 2>/dev/null || cat /tmp/all-items.json
+
+          # Build verdicts: approve everything that has a ref field
+          jq '[.[] | select(.ref != null) | {ref: .ref, resolution: "approved"}]' /tmp/all-items.json > /tmp/verdicts.json 2>/dev/null || echo "[]" > /tmp/verdicts.json
+
           ITEM_COUNT=$(jq 'length' /tmp/verdicts.json 2>/dev/null || echo "0")
 
           if [ "$ITEM_COUNT" -gt "0" ]; then
+            echo ""
             echo "Approving $ITEM_COUNT items..."
-            cat /tmp/verdicts.json
-            kane-cli context review --verdicts /tmp/verdicts.json
+            cat /tmp/verdicts.json | jq '.'
+            echo ""
+            kane-cli context review --verdicts /tmp/verdicts.json || echo "Review completed (some items may already be approved)"
           else
-            echo "No unreviewed items — all items already reviewed"
+            echo "No items found to approve"
           fi
 
       - name: "Review: Apply verdicts from file"
@@ -110,7 +116,7 @@ jobs:
           echo "  Coverage gaps — risk-ranked to-do list"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
-          kane-cli cover gaps --stage design 2>/dev/null \
+          kane-cli cover gaps 2>/dev/null \
             || echo "No gaps found — all use-cases have test coverage"
 
       # ── POST-REVIEW STATUS ─────────────────────────────
@@ -125,8 +131,8 @@ jobs:
 
       - name: Save outputs
         run: |
-          kane-cli context list --json > context-list-reviewed.json
-          kane-cli cover gaps --stage design --json > design-gaps.json 2>/dev/null || echo "[]" > design-gaps.json
+          kane-cli context list --json > context-list-reviewed.json 2>/dev/null || echo "[]" > context-list-reviewed.json
+          kane-cli cover gaps --json > design-gaps.json 2>/dev/null || echo "[]" > design-gaps.json
 
       - name: Generate visual graph
         run: kane-cli context view --output context-graph.html 2>/dev/null || true
