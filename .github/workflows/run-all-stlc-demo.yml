@@ -52,6 +52,10 @@ on:
         description: 'Max tests per use-case (number only)'
         required: true
         default: '3'
+      target_usecase:
+        description: 'Phase 3 only: design ONE use-case (e.g. uc-1). Blank = all use-cases (can take 30-40+ min for a full PRD - use one use-case for live demos)'
+        required: false
+        default: ''
       v2_prd:
         description: 'Updated PRD for phase 7 maintenance demo'
         required: true
@@ -65,7 +69,7 @@ jobs:
   stlc-demo:
     name: "STLC Demo - ${{ inputs.phases }}"
     runs-on: self-hosted
-    timeout-minutes: 60
+    timeout-minutes: 120
 
     defaults:
       run:
@@ -154,6 +158,7 @@ jobs:
 
       - name: "Phase 1 - Extract use-cases"
         if: inputs.phases == 'all' || inputs.phases == '1'
+        timeout-minutes: 10
         run: |
           Write-Host "Extracting use-cases from: ${{ inputs.source_id }}"
           kane-cli context extract --mode override --source "${{ inputs.source_id }}"
@@ -182,7 +187,7 @@ jobs:
           Write-Host ""
 
           $rawJson = kane-cli context list --json 2>$null
-          $rawJson | Out-File -FilePath "all-items.json" -Encoding utf8
+          [System.IO.File]::WriteAllText("$PWD\all-items.json", ($rawJson | Out-String), (New-Object System.Text.UTF8Encoding $false))
 
           Write-Host "=== Raw JSON from kane-cli context list --json ===" -ForegroundColor Yellow
           Write-Host $rawJson
@@ -225,7 +230,8 @@ jobs:
 
             if ($verdicts.Count -gt 0) {
               Write-Host "Approving $($verdicts.Count) items..."
-              $verdicts | ConvertTo-Json -Depth 3 | Out-File -FilePath "verdicts.json" -Encoding utf8
+              $verdictsJson = $verdicts | ConvertTo-Json -Depth 3
+              [System.IO.File]::WriteAllText("$PWD\verdicts.json", $verdictsJson, (New-Object System.Text.UTF8Encoding $false))
               Get-Content "verdicts.json"
               kane-cli context review --verdicts verdicts.json
               if ($LASTEXITCODE -ne 0) { Write-Host "Review completed (some items may already be approved)" }
@@ -254,6 +260,7 @@ jobs:
       # ===========================================================
       - name: "Phase 3 - Design tests"
         if: inputs.phases == 'all' || inputs.phases == '3'
+        timeout-minutes: 60
         run: |
           Write-Host ""
           Write-Host "================================================" -ForegroundColor Cyan
@@ -270,7 +277,7 @@ jobs:
 
           $rawJson = kane-cli context list --json 2>graph-stderr.log
           $exitCode = $LASTEXITCODE
-          $rawJson | Out-File -FilePath "graph.json" -Encoding utf8
+          [System.IO.File]::WriteAllText("$PWD\graph.json", ($rawJson | Out-String), (New-Object System.Text.UTF8Encoding $false))
 
           Write-Host "=== Raw output from context list --json ===" -ForegroundColor Yellow
           Write-Host $rawJson
@@ -331,6 +338,18 @@ jobs:
               }
             }
 
+            $targetUseCase = "${{ inputs.target_usecase }}"
+            if ($targetUseCase) {
+              if ($usecases -contains $targetUseCase) {
+                Write-Host "Targeting single use-case: $targetUseCase (of $($usecases.Count) total)" -ForegroundColor Cyan
+                $usecases = @($targetUseCase)
+              } else {
+                Write-Host "ERROR: target_usecase '$targetUseCase' not found in graph. Available:" -ForegroundColor Red
+                $usecases | ForEach-Object { Write-Host "  $_" }
+                exit 1
+              }
+            }
+
             if ($usecases.Count -eq 0) {
               Write-Host "No use-cases found. Full graph:" -ForegroundColor Yellow
               Get-Content "graph.json"
@@ -343,9 +362,34 @@ jobs:
               $current = 0
               foreach ($uc in $usecases) {
                 $current++
-                Write-Host "-- [$current/$total] Designing: $uc (max $max) --" -ForegroundColor Cyan
-                kane-cli design tests --use-case $uc --mode override --max $max --allow-unreviewed
-                if ($LASTEXITCODE -ne 0) { Write-Host "Design for $uc completed with warnings" -ForegroundColor Yellow }
+                $stepStart = Get-Date
+                Write-Host "-- [$current/$total] Designing: $uc (max $max) -- started $($stepStart.ToString('HH:mm:ss'))" -ForegroundColor Cyan
+
+                $logFile = "design-$uc.log"
+                kane-cli design tests --use-case $uc --mode override --max $max --allow-unreviewed | Tee-Object -FilePath $logFile
+                $exitCode = $LASTEXITCODE
+
+                # Some checkpoints pause even in override mode - detect and auto-resume
+                $resumeAttempts = 0
+                while ($resumeAttempts -lt 3) {
+                  $logContent = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+                  if ($logContent -and $logContent -match 'resume with:\s*kane-cli design tests --resume (\S+)') {
+                    $sessionId = $Matches[1]
+                    $resumeAttempts++
+                    Write-Host "   Session paused - auto-resuming (attempt $resumeAttempts/3): $sessionId" -ForegroundColor Yellow
+                    kane-cli design tests --resume $sessionId --mode override | Tee-Object -FilePath $logFile
+                    $exitCode = $LASTEXITCODE
+                  } else {
+                    break
+                  }
+                }
+                if ($resumeAttempts -ge 3) {
+                  Write-Host "   WARNING: $uc still paused after 3 resume attempts - check manually with: kane-cli design tests --resume $sessionId" -ForegroundColor Red
+                }
+
+                $elapsed = (Get-Date) - $stepStart
+                if ($exitCode -ne 0) { Write-Host "Design for $uc completed with warnings (exit $exitCode)" -ForegroundColor Yellow }
+                Write-Host "-- [$current/$total] Done: $uc -- took $($elapsed.ToString('mm\:ss'))" -ForegroundColor Cyan
                 Write-Host ""
               }
             }
@@ -371,7 +415,8 @@ jobs:
               if ($refValue) { $verdicts += @{ ref = $refValue; resolution = "approved" } }
             }
             if ($verdicts.Count -gt 0) {
-              $verdicts | ConvertTo-Json -Depth 3 | Out-File -FilePath "verdicts.json" -Encoding utf8
+              $verdictsJson = $verdicts | ConvertTo-Json -Depth 3
+              [System.IO.File]::WriteAllText("$PWD\verdicts.json", $verdictsJson, (New-Object System.Text.UTF8Encoding $false))
               kane-cli context review --verdicts verdicts.json
               if ($LASTEXITCODE -ne 0) { Write-Host "Review completed" }
             }
@@ -398,6 +443,7 @@ jobs:
         if: >-
           (inputs.phases == 'all' || inputs.phases == '4')
           && inputs.app_url != 'skip'
+        timeout-minutes: 15
         run: |
           Write-Host ""
           Write-Host "================================================" -ForegroundColor Cyan
@@ -436,6 +482,7 @@ jobs:
         if: >-
           (inputs.phases == 'all' || inputs.phases == '5')
           && inputs.app_url != 'skip'
+        timeout-minutes: 15
         run: |
           Write-Host ""
           Write-Host "================================================" -ForegroundColor Cyan
@@ -475,18 +522,19 @@ jobs:
         if: inputs.phases == 'all' || inputs.phases == '6'
         run: |
           $cover = kane-cli cover --json 2>$null
-          if ($cover) { $cover | Out-File -FilePath "coverage.json" -Encoding utf8 }
-          else { '{}' | Out-File -FilePath "coverage.json" -Encoding utf8 }
+          $coverContent = if ($cover) { $cover | Out-String } else { '{}' }
+          [System.IO.File]::WriteAllText("$PWD\coverage.json", $coverContent, (New-Object System.Text.UTF8Encoding $false))
 
           $gaps = kane-cli cover gaps --json 2>$null
-          if ($gaps) { $gaps | Out-File -FilePath "coverage-gaps.json" -Encoding utf8 }
-          else { '[]' | Out-File -FilePath "coverage-gaps.json" -Encoding utf8 }
+          $gapsContent = if ($gaps) { $gaps | Out-String } else { '[]' }
+          [System.IO.File]::WriteAllText("$PWD\coverage-gaps.json", $gapsContent, (New-Object System.Text.UTF8Encoding $false))
 
       # ===========================================================
       # PHASE 7: Maintenance
       # ===========================================================
       - name: "Phase 7 - Reconcile PRD change"
         if: inputs.phases == 'all' || inputs.phases == '7'
+        timeout-minutes: 10
         run: |
           Write-Host ""
           Write-Host "================================================" -ForegroundColor Cyan
