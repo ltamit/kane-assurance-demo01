@@ -56,6 +56,10 @@ jobs:
       - name: Install Kane CLI
         run: npm install -g @testmuai/kane-cli && kane-cli --version
 
+      - name: Install Kane CLI skill
+        run: kane-cli install skill || echo "Skill already installed or not available"
+
+
       - name: Authenticate
         run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
 
