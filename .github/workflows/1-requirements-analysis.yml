@@ -1,6 +1,6 @@
-name: "1 · Requirements Analysis"
+name: "1 - Requirements Analysis"
 
-# ─────────────────────────────────────────────────────────
+# ---------------------------------------------------------
 # STLC Phase: Requirements Analysis
 # Kane CLI:   context ingest + context extract
 #
@@ -11,10 +11,16 @@ name: "1 · Requirements Analysis"
 #   - Clarifying questions when the PRD is ambiguous
 #
 # What the prospect should notice:
-#   - The AI doesn't invent requirements — it cites them
+#   - The AI doesn't invent requirements - it cites them
 #   - Ambiguities are surfaced, not silently guessed
 #   - The output is structured, not a wall of text
-# ─────────────────────────────────────────────────────────
+#
+# Runs on: self-hosted Windows runner, PowerShell
+# Prerequisites on your Windows machine:
+#   1. Self-hosted runner configured and running (.\run.cmd)
+#   2. Node.js 24+ installed and in PATH
+#   3. Kane CLI: npm install -g @testmuai/kane-cli
+# ---------------------------------------------------------
 
 on:
   workflow_dispatch:
@@ -41,66 +47,91 @@ env:
 jobs:
   requirements-analysis:
     name: Ingest & Extract
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 20
+
+    defaults:
+      run:
+        shell: powershell
 
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
 
-      - name: Install Kane CLI
-        run: npm install -g @testmuai/kane-cli && kane-cli --version
+      - name: "Setup - Verify prerequisites"
+        run: |
+          Write-Host "-- Checking prerequisites --" -ForegroundColor Cyan
+          Write-Host "Node: $(node --version 2>$null)"
+          Write-Host "npm: $(npm --version 2>$null)"
+          Write-Host "Kane CLI: $(kane-cli --version 2>$null)"
+          Write-Host ""
 
-      - name: Authenticate
-        run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
+      - name: "Setup - Install Kane CLI"
+        run: |
+          npm install -g @testmuai/kane-cli
+          kane-cli --version
 
-      - name: Restore context graph
+      - name: "Setup - Authenticate"
+        run: |
+          kane-cli login --username "${{ secrets.LT_USERNAME }}" --access-key "${{ secrets.LT_ACCESS_KEY }}"
+
+      - name: "Setup - Restore context graph from cache"
         uses: actions/cache@v4
         with:
           path: .context/
           key: context-${{ hashFiles('docs/**') }}-${{ github.run_number }}
           restore-keys: context-${{ hashFiles('docs/**') }}-
 
-      # ── INGEST ─────────────────────────────────────────
-      - name: "Ingest: Snapshot the requirement document"
+      # -- INGEST ---------------------------------------------
+      - name: "Ingest - Snapshot the requirement document"
         run: |
-          echo "📄 Ingesting: ${{ inputs.source_file }}"
-          echo "   Source ID: ${{ inputs.source_id }}"
-          echo ""
-          kane-cli context ingest \
-            "./${{ inputs.source_file }}" \
-            --as "${{ inputs.source_id }}" \
-            --mode ci
+          Write-Host "Ingesting: ${{ inputs.source_file }}"
+          Write-Host "Source ID: ${{ inputs.source_id }}"
+          Write-Host ""
+          kane-cli context ingest "./${{ inputs.source_file }}" --as "${{ inputs.source_id }}" --mode ci
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Ingest failed" -ForegroundColor Red
+            exit 1
+          }
 
-      # ── EXTRACT ────────────────────────────────────────
-      - name: "Extract: AI reads the PRD and proposes use-cases"
+      # -- EXTRACT ----------------------------------------------
+      - name: "Extract - AI reads the PRD and proposes use-cases"
         run: |
-          echo "🤖 Extracting use-cases from: ${{ inputs.source_id }}"
-          echo "   Mode: ${{ inputs.mode }}"
-          echo ""
-          kane-cli context extract \
-            --mode ${{ inputs.mode }} \
-            --source "${{ inputs.source_id }}"
+          Write-Host "Extracting use-cases from: ${{ inputs.source_id }}"
+          Write-Host "Mode: ${{ inputs.mode }}"
+          Write-Host ""
+          kane-cli context extract --mode ${{ inputs.mode }} --source "${{ inputs.source_id }}"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Extract completed with warnings or errors" -ForegroundColor Yellow
+          }
 
-      # ── SHOW RESULTS ───────────────────────────────────
-      - name: "Result: List extracted use-cases"
+      # -- SHOW RESULTS -------------------------------------------
+      - name: "Result - List extracted use-cases"
         run: |
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Extracted use-cases"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
+          Write-Host ""
+          Write-Host "================================================" -ForegroundColor Cyan
+          Write-Host "  Extracted use-cases" -ForegroundColor Green
+          Write-Host "================================================" -ForegroundColor Cyan
+          Write-Host ""
           kane-cli context list
 
-      - name: Save context graph listing
-        run: kane-cli context list --json > context-list.json
+      - name: "Save context graph listing"
+        run: |
+          $listing = kane-cli context list --json 2>$null
+          if ($listing) {
+            $listing | Out-File -FilePath "context-list.json" -Encoding utf8
+          } else {
+            '[]' | Out-File -FilePath "context-list.json" -Encoding utf8
+          }
 
-      - name: Generate visual graph
-        run: kane-cli context view --output context-graph.html 2>/dev/null || true
+      - name: "Generate visual graph"
+        run: |
+          kane-cli context view --output context-graph.html 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Graph visualization not available"
+          }
 
-      - name: Upload artifacts
+      - name: "Upload artifacts"
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: 1-requirements-analysis-${{ github.run_number }}
