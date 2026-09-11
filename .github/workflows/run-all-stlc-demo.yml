@@ -1,15 +1,19 @@
 name: "Kane CLI Assurance · STLC Demo"
 
 # ─────────────────────────────────────────────────────────
-# All 7 STLC phases in one workflow, one machine.
-# Pick which phases to run via the dropdown.
+# All 7 STLC phases in one workflow, on YOUR machine.
+# Runs on a self-hosted Windows runner with Git Bash.
+# Chrome opens VISIBLY on your desktop for phases 4-5.
 #
-# "all"           → runs phases 1-6 end to end
-# "1-requirements" → runs phase 1 only
-# "1-to-3"        → runs phases 1, 2, 3 (no app needed)
-# "4-to-5"        → runs phases 4, 5 (needs app + prior phases)
-# "6-coverage"    → runs phase 6 only (needs prior phases)
-# "7-maintenance"  → runs phase 7 (reconcile against v2 PRD)
+# Prerequisites on your Windows machine:
+#   1. Self-hosted runner configured and running (.\run.cmd)
+#   2. Node.js 24+ installed
+#   3. Google Chrome installed
+#   4. Kane CLI: npm install -g @testmuai/kane-cli
+#   5. jq: choco install jq
+#   6. Git Bash (comes with Git for Windows)
+#
+# Trigger: Actions → Kane CLI Assurance · STLC Demo → Run workflow
 # ─────────────────────────────────────────────────────────
 
 on:
@@ -55,18 +59,28 @@ env:
 jobs:
   stlc-demo:
     name: "STLC Demo · ${{ inputs.phases }}"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 60
 
+    defaults:
+      run:
+        shell: bash
+
     steps:
-      # ── Setup (always runs) ────────────────────────────
+      # ── Setup ──────────────────────────────────────────
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
+      - name: "Setup · Verify prerequisites"
+        run: |
+          echo "── Checking prerequisites ──"
+          echo "Node: $(node --version 2>/dev/null || echo 'NOT FOUND')"
+          echo "npm: $(npm --version 2>/dev/null || echo 'NOT FOUND')"
+          echo "jq: $(jq --version 2>/dev/null || echo 'NOT FOUND')"
+          echo "Kane CLI: $(kane-cli --version 2>/dev/null || echo 'NOT FOUND')"
+          echo "OS: $(uname -s) $(uname -m)"
+          echo ""
 
-      - name: "Setup · Install Kane CLI"
+      - name: "Setup · Install/update Kane CLI"
         run: |
           npm install -g @testmuai/kane-cli
           kane-cli --version
@@ -74,15 +88,6 @@ jobs:
 
       - name: "Setup · Authenticate"
         run: kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
-
-      - name: "Setup · Install Chrome"
-        if: >-
-          (inputs.phases == 'all' || inputs.phases == '4-to-5')
-          && inputs.app_url != 'skip'
-        run: |
-          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get -f install -y
-          google-chrome --version
 
       # Restore .context/ from cache for phases that need prior state
       - name: "Setup · Restore context graph from cache"
@@ -141,7 +146,7 @@ jobs:
       # ─────────────────────────────────────────────────────
       # PHASE 2: Test Planning
       # ─────────────────────────────────────────────────────
-      - name: "Phase 2 · Review and approve use-cases"
+      - name: "Phase 2 · Debug — inspect context list JSON"
         if: >-
           inputs.phases == 'all' ||
           inputs.phases == '1-to-3'
@@ -151,23 +156,45 @@ jobs:
           echo "  Phase 2: Test Planning"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
-
-          kane-cli context list --json > /tmp/all-items.json 2>/dev/null || echo "[]" > /tmp/all-items.json
-
-          echo "Items in context graph:"
-          cat /tmp/all-items.json | jq '.' 2>/dev/null || cat /tmp/all-items.json
+          echo "=== Raw JSON from kane-cli context list --json ==="
+          kane-cli context list --json 2>/dev/null || echo "command failed"
           echo ""
 
-          jq '[.[] | select(.ref != null) | {ref: .ref, resolution: "approved"}]' \
-            /tmp/all-items.json > /tmp/verdicts.json 2>/dev/null || echo "[]" > /tmp/verdicts.json
+          kane-cli context list --json > all-items.json 2>/dev/null || echo "[]" > all-items.json
 
-          ITEM_COUNT=$(jq 'length' /tmp/verdicts.json 2>/dev/null || echo "0")
+          echo "=== First item (full structure) ==="
+          jq '.[0]' all-items.json 2>/dev/null || echo "jq parse failed"
+          echo ""
+
+          echo "=== All keys in first item ==="
+          jq '.[0] | keys' all-items.json 2>/dev/null || echo "no keys found"
+          echo ""
+
+          echo "=== All refs/ids/slugs ==="
+          jq -r '.[] | "ref=\(.ref // "null") id=\(.id // "null") slug=\(.slug // "null") name=\(.name // "null") type=\(.type // "null")"' all-items.json 2>/dev/null || echo "field extraction failed"
+          echo ""
+
+      - name: "Phase 2 · Review and approve use-cases"
+        if: >-
+          inputs.phases == 'all' ||
+          inputs.phases == '1-to-3'
+        run: |
+          # Build verdicts trying every possible field name
+          jq '[.[] | {ref: (.ref // .id // .slug // .name), resolution: "approved"} | select(.ref != null)]' \
+            all-items.json > verdicts.json 2>/dev/null || echo "[]" > verdicts.json
+
+          echo "=== Verdicts to submit ==="
+          cat verdicts.json
+          echo ""
+
+          ITEM_COUNT=$(jq 'length' verdicts.json 2>/dev/null || echo "0")
+
           if [ "$ITEM_COUNT" -gt "0" ]; then
             echo "Approving $ITEM_COUNT items..."
-            kane-cli context review --verdicts /tmp/verdicts.json \
+            kane-cli context review --verdicts verdicts.json \
               || echo "Review completed (some items may already be approved)"
           else
-            echo "No items to approve"
+            echo "⚠️ No items to approve — check the debug output above"
           fi
 
       - name: "Phase 2 · Coverage gaps"
@@ -201,21 +228,30 @@ jobs:
           echo ""
 
           MAX=${{ inputs.max_tests }}
-          kane-cli context list --json > /tmp/graph.json 2>/dev/null || echo "[]" > /tmp/graph.json
+          kane-cli context list --json > graph.json 2>/dev/null || echo "[]" > graph.json
 
+          # Try to find use-case refs using multiple field names
           USECASES=$(jq -r '.[] | select(
             .type == "use-case" or
             .type == "use_case" or
-            (.ref // "" | startswith("uc-"))
-          ) | .ref // .id // empty' /tmp/graph.json 2>/dev/null || true)
+            (.ref // "" | startswith("uc-")) or
+            (.id // "" | startswith("uc-")) or
+            (.slug // "" | startswith("uc-"))
+          ) | .ref // .id // .slug // empty' graph.json 2>/dev/null || true)
 
           if [ -z "$USECASES" ]; then
-            USECASES=$(jq -r '.[] | .ref // .id // empty' /tmp/graph.json 2>/dev/null | grep '^uc-' || true)
+            echo "Fallback: grep uc- from all fields"
+            USECASES=$(jq -r '.[] | .ref // .id // .slug // .name // empty' graph.json 2>/dev/null | grep '^uc-' || true)
           fi
 
           if [ -z "$USECASES" ]; then
-            echo "⚠️ No use-cases found. Graph contents:"
-            cat /tmp/graph.json | jq '.' 2>/dev/null || cat /tmp/graph.json
+            echo "Last resort: use all items"
+            USECASES=$(jq -r '.[] | .ref // .id // .slug // empty' graph.json 2>/dev/null || true)
+          fi
+
+          if [ -z "$USECASES" ]; then
+            echo "⚠️ No use-cases found. Full graph:"
+            cat graph.json
           else
             echo "Use-cases to design:"
             echo "$USECASES"
@@ -241,12 +277,12 @@ jobs:
           inputs.phases == 'all' ||
           inputs.phases == '1-to-3'
         run: |
-          kane-cli context list --json > /tmp/all-items.json 2>/dev/null || echo "[]" > /tmp/all-items.json
-          jq '[.[] | select(.ref != null) | {ref: .ref, resolution: "approved"}]' \
-            /tmp/all-items.json > /tmp/verdicts.json 2>/dev/null || echo "[]" > /tmp/verdicts.json
-          ITEM_COUNT=$(jq 'length' /tmp/verdicts.json 2>/dev/null || echo "0")
+          kane-cli context list --json > all-items.json 2>/dev/null || echo "[]" > all-items.json
+          jq '[.[] | {ref: (.ref // .id // .slug // .name), resolution: "approved"} | select(.ref != null)]' \
+            all-items.json > verdicts.json 2>/dev/null || echo "[]" > verdicts.json
+          ITEM_COUNT=$(jq 'length' verdicts.json 2>/dev/null || echo "0")
           if [ "$ITEM_COUNT" -gt "0" ]; then
-            kane-cli context review --verdicts /tmp/verdicts.json || echo "Review completed"
+            kane-cli context review --verdicts verdicts.json || echo "Review completed"
           fi
 
       - name: "Phase 3 · List test files"
@@ -263,9 +299,9 @@ jobs:
           fi
 
       # ─────────────────────────────────────────────────────
-      # PHASE 4: Test Development
+      # PHASE 4: Test Development (VISIBLE Chrome!)
       # ─────────────────────────────────────────────────────
-      - name: "Phase 4 · Author tests"
+      - name: "Phase 4 · Author tests — Chrome opens on your screen"
         if: >-
           (inputs.phases == 'all' || inputs.phases == '4-to-5')
           && inputs.app_url != 'skip'
@@ -273,17 +309,20 @@ jobs:
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "  Phase 4: Test Development"
-          echo "  App URL: ${{ inputs.app_url }}"
+          echo "  App: ${{ inputs.app_url }}"
+          echo "  >>> Chrome will open on your desktop! <<<"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
           TESTS=$(find .testmuai/tests -name '*_test.md' 2>/dev/null | head -3)
           if [ -z "$TESTS" ]; then
-            echo "No test files found — skipping"
+            echo "No test files — skipping"
             exit 0
           fi
           for TEST in $TESTS; do
             echo "── Authoring: $(basename $TEST) ──"
-            kane-cli testmd run "$TEST" --url "${{ inputs.app_url }}" --headless || true
+            kane-cli testmd run "$TEST" \
+              --url "${{ inputs.app_url }}" \
+              || echo "⚠️ Authoring completed with issues"
             echo ""
           done
 
@@ -291,12 +330,12 @@ jobs:
         if: >-
           (inputs.phases == 'all' || inputs.phases == '4-to-5')
           && inputs.app_url == 'skip'
-        run: echo "Phase 4 skipped — set app_url to enable"
+        run: echo "Phase 4 skipped — set app_url to a live URL to enable"
 
       # ─────────────────────────────────────────────────────
-      # PHASE 5: Test Execution
+      # PHASE 5: Test Execution (VISIBLE Chrome!)
       # ─────────────────────────────────────────────────────
-      - name: "Phase 5 · Batch replay"
+      - name: "Phase 5 · Batch replay — Chrome opens on your screen"
         if: >-
           (inputs.phases == 'all' || inputs.phases == '4-to-5')
           && inputs.app_url != 'skip'
@@ -304,15 +343,19 @@ jobs:
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "  Phase 5: Test Execution"
+          echo "  >>> Chrome will open on your desktop! <<<"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
-          kane-cli testrun run --match 't-' --url "${{ inputs.app_url }}" --headless || true
+          kane-cli testrun run \
+            --match 't-' \
+            --url "${{ inputs.app_url }}" \
+            || echo "⚠️ Some tests may have failed"
 
       - name: "Phase 5 · Skipped"
         if: >-
           (inputs.phases == 'all' || inputs.phases == '4-to-5')
           && inputs.app_url == 'skip'
-        run: echo "Phase 5 skipped — set app_url to enable"
+        run: echo "Phase 5 skipped — set app_url to a live URL to enable"
 
       # ─────────────────────────────────────────────────────
       # PHASE 6: Coverage & Reporting
@@ -351,11 +394,10 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "  Phase 7: Maintenance"
           echo "  Reconciling: ${{ inputs.v2_prd }}"
-          echo "  Against source: ${{ inputs.source_id }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
 
-          echo "── Context graph BEFORE reconcile ──"
+          echo "── BEFORE reconcile ──"
           kane-cli context list 2>/dev/null || echo "Empty graph"
           echo ""
 
@@ -366,23 +408,19 @@ jobs:
             || echo "⚠️ Reconcile completed with warnings"
 
           echo ""
-          echo "── Context graph AFTER reconcile ──"
+          echo "── AFTER reconcile ──"
           kane-cli context list
-
-          echo ""
-          echo "── Stale items ──"
-          kane-cli context list --stale 2>/dev/null || echo "No stale items"
 
           echo ""
           echo "── Coverage gaps after reconcile ──"
           kane-cli cover gaps 2>/dev/null || echo "No gaps"
 
-      # ── Generate graph & save cache ─────────────────────
-      - name: "Generate context graph visualization"
+      # ── Save state & artifacts ──────────────────────────
+      - name: "Generate context graph"
         if: always()
         run: kane-cli context view --output context-graph.html 2>/dev/null || true
 
-      - name: "Save context graph to cache"
+      - name: "Save to cache"
         if: always()
         uses: actions/cache/save@v4
         with:
@@ -391,13 +429,12 @@ jobs:
             .testmuai/
           key: stlc-context-${{ inputs.source_id }}-${{ github.run_number }}
 
-      # ── Summary ─────────────────────────────────────────
       - name: "Summary"
         if: always()
         run: |
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Run complete: ${{ inputs.phases }}"
+          echo "  ✅ Run complete: ${{ inputs.phases }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: "Upload artifacts"
@@ -410,5 +447,8 @@ jobs:
             coverage.json
             coverage-gaps.json
             context-graph.html
+            all-items.json
+            verdicts.json
+            graph.json
             .context/
             .testmuai/
