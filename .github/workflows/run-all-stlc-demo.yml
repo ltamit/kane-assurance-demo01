@@ -407,26 +407,44 @@ jobs:
                 $stepStart = Get-Date
                 Write-Host "-- [$current/$total] Designing: $uc (max $max) -- started $($stepStart.ToString('HH:mm:ss'))" -ForegroundColor Cyan
 
-                $logFile = "design-$uc.log"
-                kane-cli design tests --use-case $uc --mode override --max $max --allow-unreviewed | Tee-Object -FilePath $logFile
+                # Direct invocation, no piping/capturing - this is the pattern proven
+                # to run stably for 30+ minutes without the libuv crash. Any form of
+                # PowerShell reading this process's live stdout (variable capture,
+                # Tee-Object, etc.) has caused native Node/Windows crashes here before.
+                kane-cli design tests --use-case $uc --mode override --max $max --allow-unreviewed
                 $exitCode = $LASTEXITCODE
 
-                # Some checkpoints pause even in override mode - detect and auto-resume
+                # Exit code 3 = paused and resumable (per Kane CLI's documented exit codes).
+                # Look up the session id via a separate, safe, file-redirected JSON call -
+                # never by capturing the design command's own output stream.
                 $resumeAttempts = 0
-                while ($resumeAttempts -lt 3) {
-                  $logContent = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
-                  if ($logContent -and $logContent -match 'resume with:\s*kane-cli design tests --resume (\S+)') {
-                    $sessionId = $Matches[1]
-                    $resumeAttempts++
-                    Write-Host "   Session paused - auto-resuming (attempt $resumeAttempts/3): $sessionId" -ForegroundColor Yellow
-                    kane-cli design tests --resume $sessionId --mode override | Tee-Object -FilePath $logFile
+                while ($exitCode -eq 3 -and $resumeAttempts -lt 3) {
+                  $resumeAttempts++
+                  kane-cli context sessions --json > sessions.json 2>sessions-err.log
+                  $sessionsRaw = Get-Content "sessions.json" -Raw -ErrorAction SilentlyContinue
+
+                  Write-Host "=== Raw sessions.json (attempt $resumeAttempts) ===" -ForegroundColor Yellow
+                  Write-Host $sessionsRaw
+
+                  $sessions = Parse-KaneNdjson $sessionsRaw
+                  $sessionId = $null
+                  foreach ($s in $sessions) {
+                    foreach ($field in @('id', 'session_id', 'ref')) {
+                      if ($s.PSObject.Properties[$field] -and $s.$field) { $sessionId = $s.$field }
+                    }
+                  }
+
+                  if ($sessionId) {
+                    Write-Host "   Session paused (exit 3) - auto-resuming (attempt $resumeAttempts/3): $sessionId" -ForegroundColor Yellow
+                    kane-cli design tests --resume $sessionId --mode override
                     $exitCode = $LASTEXITCODE
                   } else {
+                    Write-Host "   Could not find a paused session id in 'kane-cli context sessions --json' - stopping retries" -ForegroundColor Red
                     break
                   }
                 }
-                if ($resumeAttempts -ge 3) {
-                  Write-Host "   WARNING: $uc still paused after 3 resume attempts - check manually with: kane-cli design tests --resume $sessionId" -ForegroundColor Red
+                if ($exitCode -eq 3) {
+                  Write-Host "   WARNING: $uc still paused after $resumeAttempts resume attempts - check manually with: kane-cli context sessions" -ForegroundColor Red
                 }
 
                 $elapsed = (Get-Date) - $stepStart
