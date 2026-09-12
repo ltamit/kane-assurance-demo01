@@ -1,20 +1,21 @@
 name: "Kane CLI Assurance - STLC Demo"
 
 # ---------------------------------------------------------
-# All 7 STLC phases in one workflow, on YOUR machine.
-# Each phase is individually selectable in the dropdown -
-# run just one, or "all" for the full pipeline.
-# Since this runs on a self-hosted runner, the working
-# directory (.context/ and .testmuai/) persists on disk
-# between runs, so you can run phases separately across
-# different triggers and they'll pick up where the last
-# one left off. The cache step is a safety net on top of that.
+# All 7 STLC phases in one workflow, on YOUR Windows machine.
+# Bash + jq via Git Bash - no PowerShell.
+# Chrome opens VISIBLY on your desktop for phases 4-5.
 #
-# Prerequisites on your Windows machine:
+# ONE-TIME SETUP on your Windows machine (as Administrator):
 #   1. Self-hosted runner configured and running (.\run.cmd)
 #   2. Node.js 24+ installed and in PATH
-#   3. Google Chrome installed (for phases 4-5)
+#   3. Google Chrome installed
 #   4. Kane CLI: npm install -g @testmuai/kane-cli
+#   5. Add Git Bash to system PATH:
+#        $gitBashPath = "C:\Program Files\Git\bin"
+#        [Environment]::SetEnvironmentVariable("PATH", $env:PATH + ";$gitBashPath", "Machine")
+#   6. Install jq:
+#        choco install jq -y
+#   7. Restart the runner so it picks up the new PATH
 #
 # Trigger: Actions -> Kane CLI Assurance - STLC Demo -> Run workflow
 # ---------------------------------------------------------
@@ -73,53 +74,53 @@ jobs:
 
     defaults:
       run:
-        shell: powershell
+        shell: bash
 
     steps:
-      # -- Setup (always runs) ----------------------------
+      # -- Setup ------------------------------------------
       - uses: actions/checkout@v4
 
       - name: "Setup - Verify prerequisites"
         run: |
-          Write-Host "-- Checking prerequisites --" -ForegroundColor Cyan
-          Write-Host "Node: $(node --version 2>$null)"
-          Write-Host "npm: $(npm --version 2>$null)"
-          Write-Host "Kane CLI: $(kane-cli --version 2>$null)"
-          Write-Host ""
+          echo "-- Checking prerequisites --"
+          echo "Node: $(node --version 2>/dev/null || echo 'NOT FOUND')"
+          echo "npm: $(npm --version 2>/dev/null || echo 'NOT FOUND')"
+          echo "jq: $(jq --version 2>/dev/null || echo 'NOT FOUND')"
+          echo "Kane CLI: $(kane-cli --version 2>/dev/null || echo 'NOT FOUND')"
+          echo "Shell: $(bash --version | head -1)"
+          echo ""
 
-      # - name: "Setup - Install/update Kane CLI"
-      #   run: |
-      #     npm install -g @testmuai/kane-cli
-      #     kane-cli --version
-      #     kane-cli install skill 2>$null
-      #     if ($LASTEXITCODE -ne 0) { Write-Host "Skill install skipped" }
+      - name: "Setup - Install/update Kane CLI"
+        run: |
+          npm install -g @testmuai/kane-cli
+          kane-cli --version
+          kane-cli install skill || echo "Skill install skipped"
 
-      # - name: "Setup - Authenticate"
-      #   run: |
-      #     kane-cli login --username "${{ secrets.LT_USERNAME }}" --access-key "${{ secrets.LT_ACCESS_KEY }}"
+      - name: "Setup - Authenticate"
+        run: |
+          kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
 
       - name: "Setup - Validate max_tests is numeric"
         if: inputs.phases == 'all' || inputs.phases == '3'
         run: |
-          $max = "${{ inputs.max_tests }}"
-          if ($max -notmatch '^\d+$') {
-            Write-Host "ERROR: max_tests must be a plain number, got: $max" -ForegroundColor Red
-            Write-Host "Check that app_url and max_tests inputs were not swapped" -ForegroundColor Red
+          MAX="${{ inputs.max_tests }}"
+          if ! [[ "$MAX" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: max_tests must be a plain number, got: $MAX"
+            echo "Check that app_url and max_tests inputs were not swapped"
             exit 1
-          }
+          fi
 
-      - name: "Setup - Install Chrome"
+      - name: "Setup - Check Chrome"
         if: >-
           (inputs.phases == 'all' || inputs.phases == '4' || inputs.phases == '5')
           && inputs.app_url != 'skip'
         run: |
-          Write-Host "Assuming Chrome is already installed on this machine"
-          $chrome = Get-Command "chrome" -ErrorAction SilentlyContinue
-          if (-not $chrome) {
-            Write-Host "Chrome not found in PATH - ensure it is installed" -ForegroundColor Yellow
-          }
+          if command -v chrome >/dev/null 2>&1; then
+            echo "Chrome found in PATH"
+          else
+            echo "Chrome not found in PATH - ensure it is installed (this may still be fine if kane-cli locates it independently)"
+          fi
 
-      # Restore .context/ from cache for phases that need prior state
       - name: "Setup - Restore context graph from cache"
         if: >-
           inputs.phases == '2' ||
@@ -144,172 +145,96 @@ jobs:
       - name: "Phase 1 - Ingest PRD"
         if: inputs.phases == 'all' || inputs.phases == '1'
         run: |
-          Write-Host ""
-          Write-Host "================================================" -ForegroundColor Cyan
-          Write-Host "  Phase 1: Requirements Analysis" -ForegroundColor Green
-          Write-Host "  Ingesting: ${{ inputs.source_file }}"
-          Write-Host "================================================" -ForegroundColor Cyan
-          Write-Host ""
+          echo ""
+          echo "================================================"
+          echo "  Phase 1: Requirements Analysis"
+          echo "  Ingesting: ${{ inputs.source_file }}"
+          echo "================================================"
+          echo ""
+
           kane-cli context ingest "./${{ inputs.source_file }}" --as "${{ inputs.source_id }}" --mode ci
-          $ingestExitCode = $LASTEXITCODE
+          ingest_exit=$?
 
-          # kane-cli on Windows can crash on process exit (a known Node/libuv assertion)
-          # AFTER the actual ingest has already succeeded. Don't trust the exit code alone -
-          # verify the source actually landed in the graph before deciding this failed.
-          function Parse-KaneNdjson($raw) {
-            if (-not $raw) { return @() }
-            $objs = @()
-            foreach ($line in ($raw -split "`r?`n")) {
-              $trimmed = $line.Trim()
-              if ($trimmed) {
-                try { $objs += ($trimmed | ConvertFrom-Json) } catch { }
-              }
-            }
-            return $objs
-          }
-
+          # kane-cli on Windows can crash on process exit (a known Node/libuv
+          # assertion) AFTER the actual ingest already succeeded. Don't trust
+          # the exit code alone - verify the source actually landed in the graph.
           kane-cli context list --json > verify-ingest.json 2>verify-ingest-err.log
-          $verifyRaw = Get-Content "verify-ingest.json" -Raw -ErrorAction SilentlyContinue
-          $verifyItems = Parse-KaneNdjson $verifyRaw
-          $sourceLanded = $verifyItems | Where-Object {
-            ($_.PSObject.Properties['id'] -and $_.id -eq "${{ inputs.source_id }}") -or
-            ($_.PSObject.Properties['ref'] -and $_.ref -eq "${{ inputs.source_id }}")
-          }
+          landed=$(jq -s --arg sid "${{ inputs.source_id }}" \
+            '[.[] | select(.id == $sid or .ref == $sid)] | length' verify-ingest.json 2>/dev/null || echo "0")
 
-          if ($sourceLanded) {
-            if ($ingestExitCode -ne 0) {
-              Write-Host "NOTE: kane-cli exited with code $ingestExitCode (likely the known Windows process-exit crash), but the source landed successfully - continuing" -ForegroundColor Yellow
-            } else {
-              Write-Host "Ingest confirmed - source '${{ inputs.source_id }}' is in the graph"
-            }
-          } else {
-            Write-Host "ERROR: Ingest failed - '${{ inputs.source_id }}' not found in the graph after ingest" -ForegroundColor Red
-            Write-Host "Graph contents:" -ForegroundColor Red
-            Write-Host $verifyRaw
+          if [ "$landed" -gt 0 ]; then
+            if [ "$ingest_exit" -ne 0 ]; then
+              echo "NOTE: kane-cli exited $ingest_exit (likely the known Windows process-exit crash), but the source landed successfully - continuing"
+            else
+              echo "Ingest confirmed - source '${{ inputs.source_id }}' is in the graph"
+            fi
+          else
+            echo "ERROR: Ingest failed - '${{ inputs.source_id }}' not found in the graph after ingest"
+            echo "Graph contents:"
+            cat verify-ingest.json
             exit 1
-          }
+          fi
 
       - name: "Phase 1 - Extract use-cases"
         if: inputs.phases == 'all' || inputs.phases == '1'
-        timeout-minutes: 10
         run: |
-          Write-Host "Extracting use-cases from: ${{ inputs.source_id }}"
           kane-cli context extract --mode override --source "${{ inputs.source_id }}"
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "Extract completed with warnings" -ForegroundColor Yellow
-          }
+          if [ $? -ne 0 ]; then
+            echo "Extract completed with warnings"
+          fi
 
       - name: "Phase 1 - Results"
         if: inputs.phases == 'all' || inputs.phases == '1'
         run: |
-          Write-Host ""
-          Write-Host "-- Extracted use-cases --" -ForegroundColor Cyan
+          echo ""
+          echo "-- Extracted use-cases --"
           kane-cli context list
 
       # ===========================================================
       # PHASE 2: Test Planning
       # kane-cli: context review + cover gaps
       # ===========================================================
-      - name: "Phase 2 - Debug: inspect context list JSON"
-        if: inputs.phases == 'all' || inputs.phases == '2'
-        run: |
-          Write-Host ""
-          Write-Host "================================================" -ForegroundColor Cyan
-          Write-Host "  Phase 2: Test Planning" -ForegroundColor Green
-          Write-Host "================================================" -ForegroundColor Cyan
-          Write-Host ""
-
-          kane-cli context list --json > all-items.json 2>graph-stderr.log
-          $rawJson = Get-Content "all-items.json" -Raw -ErrorAction SilentlyContinue
-
-          Write-Host "=== Raw JSON from kane-cli context list --json ===" -ForegroundColor Yellow
-          Write-Host $rawJson
-          Write-Host ""
-
-          # kane-cli --json emits NDJSON: one JSON object per line, not a wrapped array
-          function Parse-KaneNdjson($raw) {
-            if (-not $raw) { return @() }
-            $objs = @()
-            foreach ($line in ($raw -split "`r?`n")) {
-              $trimmed = $line.Trim()
-              if ($trimmed) {
-                try { $objs += ($trimmed | ConvertFrom-Json) } catch { Write-Host "  (skipped unparsable line: $trimmed)" -ForegroundColor DarkYellow }
-              }
-            }
-            return $objs
-          }
-
-          $items = Parse-KaneNdjson $rawJson
-          if ($items.Count -gt 0) {
-            Write-Host "=== First item structure ===" -ForegroundColor Yellow
-            $items[0] | ConvertTo-Json -Depth 5
-            Write-Host ""
-            Write-Host "=== Property names ===" -ForegroundColor Yellow
-            $items[0].PSObject.Properties.Name
-          } else {
-            Write-Host "No items in graph"
-          }
-
       - name: "Phase 2 - Review and approve use-cases"
         if: inputs.phases == 'all' || inputs.phases == '2'
         run: |
-          $rawJson = Get-Content "all-items.json" -Raw -ErrorAction SilentlyContinue
-          if (-not $rawJson) {
-            kane-cli context list --json > all-items.json 2>graph-stderr.log
-            $rawJson = Get-Content "all-items.json" -Raw -ErrorAction SilentlyContinue
-          }
+          echo ""
+          echo "================================================"
+          echo "  Phase 2: Test Planning"
+          echo "================================================"
+          echo ""
 
-          function Parse-KaneNdjson($raw) {
-            if (-not $raw) { return @() }
-            $objs = @()
-            foreach ($line in ($raw -split "`r?`n")) {
-              $trimmed = $line.Trim()
-              if ($trimmed) {
-                try { $objs += ($trimmed | ConvertFrom-Json) } catch { }
-              }
-            }
-            return $objs
-          }
+          kane-cli context list --json > all-items.json 2>graph-stderr.log
 
-          try {
-            $items = Parse-KaneNdjson $rawJson
-            $verdicts = @()
-            foreach ($item in $items) {
-              # Only items actually awaiting review (trust: derived) are approvable.
-              # Sources (trust: -), already-trusted items, and archived items are skipped.
-              if (-not $item.PSObject.Properties['trust'] -or $item.trust -ne 'derived') { continue }
+          echo "=== Raw JSON (NDJSON - one object per line) ==="
+          cat all-items.json
+          echo ""
 
-              $refValue = $null
-              foreach ($field in @('ref', 'id', 'slug', 'name')) {
-                if ($item.PSObject.Properties[$field] -and $item.$field) {
-                  $refValue = $item.$field
-                  break
-                }
-              }
-              if ($refValue) { $verdicts += @{ ref = $refValue; resolution = "approved" } }
-            }
+          # kane-cli --json emits NDJSON. jq's slurp mode (-s) reads multiple
+          # newline-separated JSON values and combines them into one array.
+          # Only items with trust == "derived" are actually awaiting review -
+          # sources have trust "-", already-approved items are "trusted".
+          jq -s '[.[] | select(.trust == "derived") | {ref: (.ref // .id // .slug // .name), resolution: "approved"}]' \
+            all-items.json > verdicts.json 2>/dev/null || echo "[]" > verdicts.json
 
-            if ($verdicts.Count -gt 0) {
-              Write-Host "Approving $($verdicts.Count) items..."
-              $verdictsJson = $verdicts | ConvertTo-Json -Depth 3
-              [System.IO.File]::WriteAllText("$PWD\verdicts.json", $verdictsJson, (New-Object System.Text.UTF8Encoding $false))
-              Get-Content "verdicts.json"
-              kane-cli context review --verdicts verdicts.json
-              if ($LASTEXITCODE -ne 0) { Write-Host "Review completed (some items may already be approved)" }
-            } else {
-              Write-Host "No items to approve"
-            }
-          } catch {
-            Write-Host "Could not build verdicts: $_"
-          }
+          item_count=$(jq 'length' verdicts.json 2>/dev/null || echo "0")
+
+          if [ "$item_count" -gt 0 ]; then
+            echo "Approving $item_count items..."
+            cat verdicts.json
+            kane-cli context review --verdicts verdicts.json
+            if [ $? -ne 0 ]; then
+              echo "Review completed (some items may already be approved)"
+            fi
+          else
+            echo "No items to approve"
+          fi
 
       - name: "Phase 2 - Coverage gaps"
         if: inputs.phases == 'all' || inputs.phases == '2'
         run: |
-          Write-Host ""
-          Write-Host "-- Coverage gaps (pre-design) --" -ForegroundColor Cyan
-          kane-cli cover gaps 2>$null
-          if ($LASTEXITCODE -ne 0) { Write-Host "Gaps will appear after test design" }
+          echo ""
+          echo "-- Coverage gaps (pre-design) --"
+          kane-cli cover gaps || echo "Gaps will appear after test design"
 
       - name: "Phase 2 - Graph after review"
         if: inputs.phases == 'all' || inputs.phases == '2'
@@ -323,231 +248,140 @@ jobs:
         if: inputs.phases == 'all' || inputs.phases == '3'
         timeout-minutes: 60
         run: |
-          Write-Host ""
-          Write-Host "================================================" -ForegroundColor Cyan
-          Write-Host "  Phase 3: Test Design" -ForegroundColor Green
-          Write-Host "  Max tests per use-case: ${{ inputs.max_tests }}"
-          Write-Host "================================================" -ForegroundColor Cyan
-          Write-Host ""
+          echo ""
+          echo "================================================"
+          echo "  Phase 3: Test Design"
+          echo "  Max tests per use-case: ${{ inputs.max_tests }}"
+          echo "================================================"
+          echo ""
 
-          $max = "${{ inputs.max_tests }}"
-          if ($max -notmatch '^\d+$') {
-            Write-Host "ERROR: max_tests must be a number, got: $max" -ForegroundColor Red
+          MAX="${{ inputs.max_tests }}"
+          if ! [[ "$MAX" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: max_tests must be a number, got: $MAX"
             exit 1
-          }
+          fi
 
           kane-cli context list --json > graph.json 2>graph-stderr.log
-          $exitCode = $LASTEXITCODE
-          $rawJson = Get-Content "graph.json" -Raw -ErrorAction SilentlyContinue
 
-          Write-Host "=== Raw output from context list --json ===" -ForegroundColor Yellow
-          Write-Host $rawJson
-          if (Test-Path "graph-stderr.log") {
-            $stderrContent = Get-Content "graph-stderr.log" -Raw
-            if ($stderrContent) {
-              Write-Host "=== stderr ===" -ForegroundColor Yellow
-              Write-Host $stderrContent
-            }
-          }
-          Write-Host "=== exit code: $exitCode ===" -ForegroundColor Yellow
-          Write-Host ""
+          echo "=== Raw graph ==="
+          cat graph.json
+          echo ""
 
-          if ($exitCode -ne 0) {
-            Write-Host "ERROR: kane-cli context list failed (exit $exitCode)" -ForegroundColor Red
-            Write-Host "Likely causes: session expired, or phases 1-2 have not run yet on this machine" -ForegroundColor Red
-            Write-Host "Try: kane-cli login again, or re-run phase 1 and 2 first" -ForegroundColor Red
-            exit 1
-          }
+          # Find use-cases: label == "usecase", or an id/ref starting with uc-
+          mapfile -t usecases < <(jq -s -r \
+            '[.[] | select(.label == "usecase" or (.id // "" | startswith("uc-")) or (.ref // "" | startswith("uc-")))] | .[] | (.ref // .id // .slug)' \
+            graph.json 2>/dev/null)
 
-          function Parse-KaneNdjson($raw) {
-            if (-not $raw) { return @() }
-            $objs = @()
-            foreach ($line in ($raw -split "`r?`n")) {
-              $trimmed = $line.Trim()
-              if ($trimmed) {
-                try { $objs += ($trimmed | ConvertFrom-Json) } catch { }
-              }
-            }
-            return $objs
-          }
+          if [ "${#usecases[@]}" -eq 0 ]; then
+            echo "No type-based matches - trying uc- prefix on all fields"
+            mapfile -t usecases < <(jq -s -r \
+              '[.[] | (.ref // .id // .slug // .name // empty)] | .[] | select(startswith("uc-"))' \
+              graph.json 2>/dev/null)
+          fi
 
-          try {
-            $items = Parse-KaneNdjson $rawJson
-            $usecases = @()
+          if [ "${#usecases[@]}" -eq 0 ]; then
+            echo "No use-cases found. Full graph:"
+            cat graph.json
+            exit 0
+          fi
 
-            foreach ($item in $items) {
-              $refValue = $null
-              foreach ($field in @('ref', 'id', 'slug')) {
-                if ($item.PSObject.Properties[$field] -and $item.$field) { $refValue = $item.$field; break }
-              }
-              if (-not $refValue) { continue }
+          TARGET_USECASE="${{ inputs.target_usecase }}"
+          if [ -n "$TARGET_USECASE" ]; then
+            if printf '%s\n' "${usecases[@]}" | grep -qx "$TARGET_USECASE"; then
+              echo "Targeting single use-case: $TARGET_USECASE (of ${#usecases[@]} total)"
+              usecases=("$TARGET_USECASE")
+            else
+              echo "ERROR: target_usecase '$TARGET_USECASE' not found in graph. Available:"
+              printf '  %s\n' "${usecases[@]}"
+              exit 1
+            fi
+          fi
 
-              $isUseCase = $false
-              if ($item.PSObject.Properties['label'] -and $item.label -in @('usecase', 'use-case', 'use_case')) {
-                $isUseCase = $true
-              }
-              if ($item.PSObject.Properties['type'] -and $item.type -in @('use-case', 'use_case', 'usecase')) {
-                $isUseCase = $true
-              }
-              if ($refValue -like 'uc-*') { $isUseCase = $true }
-              if ($isUseCase) { $usecases += $refValue }
-            }
+          echo "Use-cases to design:"
+          printf '  %s\n' "${usecases[@]}"
+          echo ""
 
-            if ($usecases.Count -eq 0) {
-              Write-Host "No type-based matches - trying uc- prefix on all fields"
-              foreach ($item in $items) {
-                foreach ($field in @('ref', 'id', 'slug', 'name')) {
-                  if ($item.PSObject.Properties[$field] -and $item.$field -like 'uc-*') {
-                    $usecases += $item.$field
-                    break
-                  }
-                }
-              }
-            }
+          total=${#usecases[@]}
+          current=0
+          for uc in "${usecases[@]}"; do
+            current=$((current + 1))
+            step_start=$(date +%s)
+            echo "-- [$current/$total] Designing: $uc (max $MAX) -- started $(date '+%H:%M:%S')"
 
-            if ($usecases.Count -eq 0) {
-              Write-Host "Last resort: trying all items as use-cases"
-              foreach ($item in $items) {
-                foreach ($field in @('ref', 'id', 'slug')) {
-                  if ($item.PSObject.Properties[$field] -and $item.$field) { $usecases += $item.$field; break }
-                }
-              }
-            }
+            # Direct invocation, no piping/capturing into a variable - this
+            # pattern has proven stable for 30+ minute design sessions.
+            kane-cli design tests --use-case "$uc" --mode override --max "$MAX" --allow-unreviewed
+            exit_code=$?
 
-            $targetUseCase = "${{ inputs.target_usecase }}"
-            if ($targetUseCase) {
-              if ($usecases -contains $targetUseCase) {
-                Write-Host "Targeting single use-case: $targetUseCase (of $($usecases.Count) total)" -ForegroundColor Cyan
-                $usecases = @($targetUseCase)
-              } else {
-                Write-Host "ERROR: target_usecase '$targetUseCase' not found in graph. Available:" -ForegroundColor Red
-                $usecases | ForEach-Object { Write-Host "  $_" }
-                exit 1
-              }
-            }
+            # Exit code 3 = paused and resumable (per kane-cli's documented
+            # exit codes). Look up the session id via a separate, safe,
+            # file-redirected JSON call - never by capturing this command's
+            # own output stream.
+            resume_attempts=0
+            while [ "$exit_code" -eq 3 ] && [ "$resume_attempts" -lt 3 ]; do
+              resume_attempts=$((resume_attempts + 1))
+              kane-cli context sessions --json > sessions.json 2>sessions-err.log
 
-            if ($usecases.Count -eq 0) {
-              Write-Host "No use-cases found. Full graph:" -ForegroundColor Yellow
-              Get-Content "graph.json"
-            } else {
-              Write-Host "Use-cases to design:"
-              $usecases | ForEach-Object { Write-Host "  $_" }
-              Write-Host ""
+              echo "=== Raw sessions.json (attempt $resume_attempts) ==="
+              cat sessions.json
 
-              $total = $usecases.Count
-              $current = 0
-              foreach ($uc in $usecases) {
-                $current++
-                $stepStart = Get-Date
-                Write-Host "-- [$current/$total] Designing: $uc (max $max) -- started $($stepStart.ToString('HH:mm:ss'))" -ForegroundColor Cyan
+              session_id=$(jq -s -r '[.[] | (.id // .session_id // .ref // empty)] | .[-1] // empty' sessions.json 2>/dev/null)
 
-                # Direct invocation, no piping/capturing - this is the pattern proven
-                # to run stably for 30+ minutes without the libuv crash. Any form of
-                # PowerShell reading this process's live stdout (variable capture,
-                # Tee-Object, etc.) has caused native Node/Windows crashes here before.
-                kane-cli design tests --use-case $uc --mode override --max $max --allow-unreviewed
-                $exitCode = $LASTEXITCODE
+              if [ -n "$session_id" ]; then
+                echo "   Session paused (exit 3) - auto-resuming (attempt $resume_attempts/3): $session_id"
+                kane-cli design tests --resume "$session_id" --mode override
+                exit_code=$?
+              else
+                echo "   Could not find a paused session id - stopping retries"
+                break
+              fi
+            done
 
-                # Exit code 3 = paused and resumable (per Kane CLI's documented exit codes).
-                # Look up the session id via a separate, safe, file-redirected JSON call -
-                # never by capturing the design command's own output stream.
-                $resumeAttempts = 0
-                while ($exitCode -eq 3 -and $resumeAttempts -lt 3) {
-                  $resumeAttempts++
-                  kane-cli context sessions --json > sessions.json 2>sessions-err.log
-                  $sessionsRaw = Get-Content "sessions.json" -Raw -ErrorAction SilentlyContinue
+            if [ "$exit_code" -eq 3 ]; then
+              echo "   WARNING: $uc still paused after $resume_attempts resume attempts - check manually with: kane-cli context sessions"
+            fi
 
-                  Write-Host "=== Raw sessions.json (attempt $resumeAttempts) ===" -ForegroundColor Yellow
-                  Write-Host $sessionsRaw
-
-                  $sessions = Parse-KaneNdjson $sessionsRaw
-                  $sessionId = $null
-                  foreach ($s in $sessions) {
-                    foreach ($field in @('id', 'session_id', 'ref')) {
-                      if ($s.PSObject.Properties[$field] -and $s.$field) { $sessionId = $s.$field }
-                    }
-                  }
-
-                  if ($sessionId) {
-                    Write-Host "   Session paused (exit 3) - auto-resuming (attempt $resumeAttempts/3): $sessionId" -ForegroundColor Yellow
-                    kane-cli design tests --resume $sessionId --mode override
-                    $exitCode = $LASTEXITCODE
-                  } else {
-                    Write-Host "   Could not find a paused session id in 'kane-cli context sessions --json' - stopping retries" -ForegroundColor Red
-                    break
-                  }
-                }
-                if ($exitCode -eq 3) {
-                  Write-Host "   WARNING: $uc still paused after $resumeAttempts resume attempts - check manually with: kane-cli context sessions" -ForegroundColor Red
-                }
-
-                $elapsed = (Get-Date) - $stepStart
-                if ($exitCode -ne 0) { Write-Host "Design for $uc completed with warnings (exit $exitCode)" -ForegroundColor Yellow }
-                Write-Host "-- [$current/$total] Done: $uc -- took $($elapsed.ToString('mm\:ss'))" -ForegroundColor Cyan
-                Write-Host ""
-              }
-            }
-          } catch {
-            Write-Host "ERROR: Could not parse graph JSON: $_" -ForegroundColor Red
-            Write-Host "Raw content that failed to parse:" -ForegroundColor Red
-            Write-Host $rawJson
-            exit 1
-          }
+            step_end=$(date +%s)
+            elapsed=$((step_end - step_start))
+            if [ "$exit_code" -ne 0 ] && [ "$exit_code" -ne 3 ]; then
+              echo "Design for $uc completed with warnings (exit $exit_code)"
+            fi
+            echo "-- [$current/$total] Done: $uc -- took $((elapsed / 60))m $((elapsed % 60))s"
+            echo ""
+          done
 
       - name: "Phase 3 - Approve designed tests"
         if: inputs.phases == 'all' || inputs.phases == '3'
         run: |
           kane-cli context list --json > post-design-items.json 2>graph-stderr.log
-          $rawJson = Get-Content "post-design-items.json" -Raw -ErrorAction SilentlyContinue
 
-          function Parse-KaneNdjson($raw) {
-            if (-not $raw) { return @() }
-            $objs = @()
-            foreach ($line in ($raw -split "`r?`n")) {
-              $trimmed = $line.Trim()
-              if ($trimmed) {
-                try { $objs += ($trimmed | ConvertFrom-Json) } catch { }
-              }
-            }
-            return $objs
-          }
+          # Only items awaiting review (trust: derived) are approvable - this
+          # correctly targets newly-designed tests/ACs/scenarios while
+          # skipping use-cases already approved in phase 2.
+          jq -s '[.[] | select(.trust == "derived") | {ref: (.ref // .id // .slug // .name), resolution: "approved"}]' \
+            post-design-items.json > verdicts.json 2>/dev/null || echo "[]" > verdicts.json
 
-          try {
-            $items = Parse-KaneNdjson $rawJson
-            $verdicts = @()
-            foreach ($item in $items) {
-              # Only items actually awaiting review (trust: derived) are approvable.
-              # This correctly targets the newly-designed tests/ACs/scenarios from this
-              # phase, while skipping use-cases already approved back in phase 2.
-              if (-not $item.PSObject.Properties['trust'] -or $item.trust -ne 'derived') { continue }
-
-              $refValue = $null
-              foreach ($field in @('ref', 'id', 'slug', 'name')) {
-                if ($item.PSObject.Properties[$field] -and $item.$field) { $refValue = $item.$field; break }
-              }
-              if ($refValue) { $verdicts += @{ ref = $refValue; resolution = "approved" } }
-            }
-            if ($verdicts.Count -gt 0) {
-              $verdictsJson = $verdicts | ConvertTo-Json -Depth 3
-              [System.IO.File]::WriteAllText("$PWD\verdicts.json", $verdictsJson, (New-Object System.Text.UTF8Encoding $false))
-              kane-cli context review --verdicts verdicts.json
-              if ($LASTEXITCODE -ne 0) { Write-Host "Review completed" }
-            }
-          } catch {
-            Write-Host "Review skipped: $_"
-          }
+          item_count=$(jq 'length' verdicts.json 2>/dev/null || echo "0")
+          if [ "$item_count" -gt 0 ]; then
+            echo "Approving $item_count items..."
+            kane-cli context review --verdicts verdicts.json
+            if [ $? -ne 0 ]; then
+              echo "Review completed"
+            fi
+          else
+            echo "No items to approve"
+          fi
 
       - name: "Phase 3 - List test files"
         if: inputs.phases == 'all' || inputs.phases == '3'
         run: |
-          Write-Host "-- Designed test files --" -ForegroundColor Cyan
-          if (Test-Path ".testmuai/tests") {
-            $files = Get-ChildItem -Path ".testmuai/tests" -Filter "*_test.md" -Recurse
-            $files | ForEach-Object { Write-Host "  $($_.FullName)" }
-            Write-Host "Total: $($files.Count) test files"
-          } else {
-            Write-Host "No test files generated"
-          }
+          echo "-- Designed test files --"
+          if [ -d ".testmuai/tests" ]; then
+            find .testmuai/tests -name '*_test.md' | sort
+            echo "Total: $(find .testmuai/tests -name '*_test.md' | wc -l) test files"
+          else
+            echo "No test files generated"
+          fi
 
       # ===========================================================
       # PHASE 4: Test Development (visible Chrome window)
@@ -558,35 +392,37 @@ jobs:
           && inputs.app_url != 'skip'
         timeout-minutes: 15
         run: |
-          Write-Host ""
-          Write-Host "================================================" -ForegroundColor Cyan
-          Write-Host "  Phase 4: Test Development" -ForegroundColor Green
-          Write-Host "  App: ${{ inputs.app_url }}"
-          Write-Host "  >>> Chrome will open on your desktop! <<<" -ForegroundColor Yellow
-          Write-Host "================================================" -ForegroundColor Cyan
-          Write-Host ""
+          echo ""
+          echo "================================================"
+          echo "  Phase 4: Test Development"
+          echo "  App: ${{ inputs.app_url }}"
+          echo "  >>> Chrome will open on your desktop! <<<"
+          echo "================================================"
+          echo ""
 
-          if (Test-Path ".testmuai/tests") {
-            $tests = Get-ChildItem -Path ".testmuai/tests" -Filter "*_test.md" -Recurse | Select-Object -First 3
-            if ($tests.Count -eq 0) {
-              Write-Host "No test files found - skipping"
+          if [ -d ".testmuai/tests" ]; then
+            mapfile -t tests < <(find .testmuai/tests -name '*_test.md' | head -3)
+            if [ "${#tests[@]}" -eq 0 ]; then
+              echo "No test files found - skipping"
               exit 0
-            }
-            foreach ($test in $tests) {
-              Write-Host "-- Authoring: $($test.Name) --" -ForegroundColor Cyan
-              kane-cli testmd run $test.FullName --url "${{ inputs.app_url }}"
-              if ($LASTEXITCODE -ne 0) { Write-Host "Authoring completed with issues" -ForegroundColor Yellow }
-              Write-Host ""
-            }
-          } else {
-            Write-Host "No .testmuai/tests directory - run phase 3 first"
-          }
+            fi
+            for test in "${tests[@]}"; do
+              echo "-- Authoring: $(basename "$test") --"
+              kane-cli testmd run "$test" --url "${{ inputs.app_url }}"
+              if [ $? -ne 0 ]; then
+                echo "Authoring completed with issues"
+              fi
+              echo ""
+            done
+          else
+            echo "No .testmuai/tests directory - run phase 3 first"
+          fi
 
       - name: "Phase 4 - Skipped"
         if: >-
           (inputs.phases == 'all' || inputs.phases == '4')
           && inputs.app_url == 'skip'
-        run: Write-Host "Phase 4 skipped - set app_url to a live URL to enable"
+        run: echo "Phase 4 skipped - set app_url to a live URL to enable"
 
       # ===========================================================
       # PHASE 5: Test Execution (visible Chrome window)
@@ -597,20 +433,22 @@ jobs:
           && inputs.app_url != 'skip'
         timeout-minutes: 15
         run: |
-          Write-Host ""
-          Write-Host "================================================" -ForegroundColor Cyan
-          Write-Host "  Phase 5: Test Execution" -ForegroundColor Green
-          Write-Host "  >>> Chrome will open on your desktop! <<<" -ForegroundColor Yellow
-          Write-Host "================================================" -ForegroundColor Cyan
-          Write-Host ""
+          echo ""
+          echo "================================================"
+          echo "  Phase 5: Test Execution"
+          echo "  >>> Chrome will open on your desktop! <<<"
+          echo "================================================"
+          echo ""
           kane-cli testrun run --match "t-" --url "${{ inputs.app_url }}"
-          if ($LASTEXITCODE -ne 0) { Write-Host "Some tests may have failed - check evidence" -ForegroundColor Yellow }
+          if [ $? -ne 0 ]; then
+            echo "Some tests may have failed - check evidence"
+          fi
 
       - name: "Phase 5 - Skipped"
         if: >-
           (inputs.phases == 'all' || inputs.phases == '5')
           && inputs.app_url == 'skip'
-        run: Write-Host "Phase 5 skipped - set app_url to a live URL to enable"
+        run: echo "Phase 5 skipped - set app_url to a live URL to enable"
 
       # ===========================================================
       # PHASE 6: Coverage & Reporting
@@ -618,31 +456,25 @@ jobs:
       - name: "Phase 6 - Coverage report"
         if: inputs.phases == 'all' || inputs.phases == '6'
         run: |
-          Write-Host ""
-          Write-Host "================================================" -ForegroundColor Cyan
-          Write-Host "  Phase 6: Coverage & Reporting" -ForegroundColor Green
-          Write-Host "================================================" -ForegroundColor Cyan
-          Write-Host ""
-          Write-Host "-- Coverage panel --" -ForegroundColor Cyan
-          kane-cli cover 2>$null
-          if ($LASTEXITCODE -ne 0) { Write-Host "No evidence packs yet" }
-          Write-Host ""
-          Write-Host "-- Coverage gaps --" -ForegroundColor Cyan
-          kane-cli cover gaps 2>$null
-          if ($LASTEXITCODE -ne 0) { Write-Host "No gaps to report" }
+          echo ""
+          echo "================================================"
+          echo "  Phase 6: Coverage & Reporting"
+          echo "================================================"
+          echo ""
+          echo "-- Coverage panel --"
+          kane-cli cover || echo "No evidence packs yet"
+          echo ""
+          echo "-- Coverage gaps --"
+          kane-cli cover gaps || echo "No gaps to report"
 
       - name: "Phase 6 - Save JSON"
         if: inputs.phases == 'all' || inputs.phases == '6'
         run: |
           kane-cli cover --json > coverage.json 2>cover-stderr.log
-          if (-not (Get-Content "coverage.json" -Raw -ErrorAction SilentlyContinue)) {
-            [System.IO.File]::WriteAllText("$PWD\coverage.json", '{}', (New-Object System.Text.UTF8Encoding $false))
-          }
+          if [ ! -s coverage.json ]; then echo "{}" > coverage.json; fi
 
           kane-cli cover gaps --json > coverage-gaps.json 2>gaps-stderr.log
-          if (-not (Get-Content "coverage-gaps.json" -Raw -ErrorAction SilentlyContinue)) {
-            [System.IO.File]::WriteAllText("$PWD\coverage-gaps.json", '[]', (New-Object System.Text.UTF8Encoding $false))
-          }
+          if [ ! -s coverage-gaps.json ]; then echo "[]" > coverage-gaps.json; fi
 
       # ===========================================================
       # PHASE 7: Maintenance
@@ -651,36 +483,35 @@ jobs:
         if: inputs.phases == 'all' || inputs.phases == '7'
         timeout-minutes: 10
         run: |
-          Write-Host ""
-          Write-Host "================================================" -ForegroundColor Cyan
-          Write-Host "  Phase 7: Maintenance" -ForegroundColor Green
-          Write-Host "  Reconciling: ${{ inputs.v2_prd }}"
-          Write-Host "================================================" -ForegroundColor Cyan
-          Write-Host ""
+          echo ""
+          echo "================================================"
+          echo "  Phase 7: Maintenance"
+          echo "  Reconciling: ${{ inputs.v2_prd }}"
+          echo "================================================"
+          echo ""
 
-          Write-Host "-- BEFORE reconcile --" -ForegroundColor Cyan
-          kane-cli context list 2>$null
-          if ($LASTEXITCODE -ne 0) { Write-Host "Empty graph" }
-          Write-Host ""
+          echo "-- BEFORE reconcile --"
+          kane-cli context list || echo "Empty graph"
+          echo ""
 
           kane-cli maintain reconcile --from "./${{ inputs.v2_prd }}" --source-id "${{ inputs.source_id }}" --mode override
-          if ($LASTEXITCODE -ne 0) { Write-Host "Reconcile completed with warnings" -ForegroundColor Yellow }
+          if [ $? -ne 0 ]; then
+            echo "Reconcile completed with warnings"
+          fi
 
-          Write-Host ""
-          Write-Host "-- AFTER reconcile --" -ForegroundColor Cyan
+          echo ""
+          echo "-- AFTER reconcile --"
           kane-cli context list
 
-          Write-Host ""
-          Write-Host "-- Coverage gaps after reconcile --" -ForegroundColor Cyan
-          kane-cli cover gaps 2>$null
-          if ($LASTEXITCODE -ne 0) { Write-Host "No gaps" }
+          echo ""
+          echo "-- Coverage gaps after reconcile --"
+          kane-cli cover gaps || echo "No gaps"
 
       # -- Save state & artifacts --------------------------
       - name: "Generate context graph"
         if: always()
         run: |
-          kane-cli context view --output context-graph.html 2>$null
-          if ($LASTEXITCODE -ne 0) { Write-Host "Graph generation skipped" }
+          kane-cli context view --output context-graph.html || echo "Graph generation skipped"
 
       - name: "Save to cache"
         if: always()
@@ -694,10 +525,10 @@ jobs:
       - name: "Summary"
         if: always()
         run: |
-          Write-Host ""
-          Write-Host "================================================" -ForegroundColor Cyan
-          Write-Host "  Run complete: phase ${{ inputs.phases }}" -ForegroundColor Green
-          Write-Host "================================================" -ForegroundColor Cyan
+          echo ""
+          echo "================================================"
+          echo "  Run complete: phase ${{ inputs.phases }}"
+          echo "================================================"
 
       - name: "Upload artifacts"
         if: always()
@@ -712,5 +543,6 @@ jobs:
             all-items.json
             verdicts.json
             graph.json
+            verify-ingest.json
             .context/
             .testmuai/
