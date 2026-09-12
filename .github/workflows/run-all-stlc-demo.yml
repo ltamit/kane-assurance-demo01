@@ -151,8 +151,41 @@ jobs:
           Write-Host "================================================" -ForegroundColor Cyan
           Write-Host ""
           kane-cli context ingest "./${{ inputs.source_file }}" --as "${{ inputs.source_id }}" --mode ci
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: Ingest failed" -ForegroundColor Red
+          $ingestExitCode = $LASTEXITCODE
+
+          # kane-cli on Windows can crash on process exit (a known Node/libuv assertion)
+          # AFTER the actual ingest has already succeeded. Don't trust the exit code alone -
+          # verify the source actually landed in the graph before deciding this failed.
+          function Parse-KaneNdjson($raw) {
+            if (-not $raw) { return @() }
+            $objs = @()
+            foreach ($line in ($raw -split "`r?`n")) {
+              $trimmed = $line.Trim()
+              if ($trimmed) {
+                try { $objs += ($trimmed | ConvertFrom-Json) } catch { }
+              }
+            }
+            return $objs
+          }
+
+          kane-cli context list --json > verify-ingest.json 2>verify-ingest-err.log
+          $verifyRaw = Get-Content "verify-ingest.json" -Raw -ErrorAction SilentlyContinue
+          $verifyItems = Parse-KaneNdjson $verifyRaw
+          $sourceLanded = $verifyItems | Where-Object {
+            ($_.PSObject.Properties['id'] -and $_.id -eq "${{ inputs.source_id }}") -or
+            ($_.PSObject.Properties['ref'] -and $_.ref -eq "${{ inputs.source_id }}")
+          }
+
+          if ($sourceLanded) {
+            if ($ingestExitCode -ne 0) {
+              Write-Host "NOTE: kane-cli exited with code $ingestExitCode (likely the known Windows process-exit crash), but the source landed successfully - continuing" -ForegroundColor Yellow
+            } else {
+              Write-Host "Ingest confirmed - source '${{ inputs.source_id }}' is in the graph"
+            }
+          } else {
+            Write-Host "ERROR: Ingest failed - '${{ inputs.source_id }}' not found in the graph after ingest" -ForegroundColor Red
+            Write-Host "Graph contents:" -ForegroundColor Red
+            Write-Host $verifyRaw
             exit 1
           }
 
