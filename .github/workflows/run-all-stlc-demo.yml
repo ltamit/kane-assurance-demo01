@@ -74,7 +74,13 @@ jobs:
 
     defaults:
       run:
-        shell: bash
+        # If plain 'bash' isn't resolvable on this runner's PATH, replace the
+        # line below with the 8.3 short path to bash.exe (no spaces), e.g.:
+        #   shell: 'C:/PROGRA~1/Git/bin/bash.exe --noprofile --norc -e -o pipefail {0}'
+        # Get the short path by running this in PowerShell on the runner machine:
+        #   $fso = New-Object -ComObject Scripting.FileSystemObject
+        #   $fso.GetFile("C:\Program Files\Git\bin\bash.exe").ShortPath
+        shell: 'C:/PROGRA~1/Git/bin/bash.exe --noprofile --norc -e -o pipefail {0}'
 
     steps:
       # -- Setup ------------------------------------------
