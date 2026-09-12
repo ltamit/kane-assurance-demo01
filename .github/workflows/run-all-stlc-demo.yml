@@ -398,6 +398,68 @@ jobs:
             echo "No test files generated"
           fi
 
+      - name: "Phase 3 - Scan for unresolved variables (across ALL tests)"
+        if: >-
+          inputs.phases == 'all' || inputs.phases == '3' || inputs.phases == '4'
+        run: |
+          echo ""
+          echo "================================================"
+          echo "  Unresolved variables across all designed tests"
+          echo "================================================"
+          echo ""
+          echo "Variable names are minted fresh per design session -"
+          echo "the AI does not reuse a fixed vocabulary, even for"
+          echo "conceptually identical fixtures. This scan reads the"
+          echo "actual test files instead of guessing names in advance."
+          echo ""
+
+          if [ ! -d ".testmuai/tests" ]; then
+            echo "No .testmuai/tests directory - run phase 3 design first"
+            exit 0
+          fi
+
+          VARS_FILE=".testmuai/variables/assurance.json"
+
+          # Extract every unique {{variable}} placeholder across all test files
+          mapfile -t all_vars < <(grep -ohE '\{\{[a-zA-Z0-9_]+\}\}' .testmuai/tests/*_test.md 2>/dev/null \
+            | sed 's/[{}]//g' | sort -u)
+
+          if [ "${#all_vars[@]}" -eq 0 ]; then
+            echo "No variables found in any designed test"
+            exit 0
+          fi
+
+          echo "Found ${#all_vars[@]} unique variable(s):"
+          echo ""
+
+          missing_count=0
+          for var in "${all_vars[@]}"; do
+            value=""
+            if [ -f "$VARS_FILE" ]; then
+              value=$(jq -r --arg v "$var" '.[$v].value // empty' "$VARS_FILE" 2>/dev/null)
+            fi
+
+            used_by=$(grep -l "{{$var}}" .testmuai/tests/*_test.md 2>/dev/null \
+              | xargs -n1 basename 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+
+            if [ -z "$value" ]; then
+              missing_count=$((missing_count + 1))
+              echo "  [MISSING] $var"
+              echo "            used by: $used_by"
+            else
+              echo "  [OK]      $var = $value"
+            fi
+          done
+
+          echo ""
+          if [ "$missing_count" -gt 0 ]; then
+            echo "$missing_count variable(s) still need values in: $VARS_FILE"
+            echo "Fill all of them in now, then run phase 4 - one consolidated"
+            echo "pass instead of discovering them one test at a time."
+          else
+            echo "All variables resolved - ready for phase 4"
+          fi
+
       # ===========================================================
       # PHASE 4: Test Development (visible Chrome window)
       # ===========================================================
