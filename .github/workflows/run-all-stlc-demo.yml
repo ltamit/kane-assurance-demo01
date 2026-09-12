@@ -87,16 +87,16 @@ jobs:
           Write-Host "Kane CLI: $(kane-cli --version 2>$null)"
           Write-Host ""
 
-      # - name: "Setup - Install/update Kane CLI"
-      #   run: |
-      #     npm install -g @testmuai/kane-cli
-      #     kane-cli --version
-      #     kane-cli install skill 2>$null
-      #     if ($LASTEXITCODE -ne 0) { Write-Host "Skill install skipped" }
+      - name: "Setup - Install/update Kane CLI"
+        run: |
+          npm install -g @testmuai/kane-cli
+          kane-cli --version
+          kane-cli install skill 2>$null
+          if ($LASTEXITCODE -ne 0) { Write-Host "Skill install skipped" }
 
-      # - name: "Setup - Authenticate"
-      #   run: |
-      #     kane-cli login --username "${{ secrets.LT_USERNAME }}" --access-key "${{ secrets.LT_ACCESS_KEY }}"
+      - name: "Setup - Authenticate"
+        run: |
+          kane-cli login --username "${{ secrets.LT_USERNAME }}" --access-key "${{ secrets.LT_ACCESS_KEY }}"
 
       - name: "Setup - Validate max_tests is numeric"
         if: inputs.phases == 'all' || inputs.phases == '3'
@@ -193,19 +193,28 @@ jobs:
           Write-Host $rawJson
           Write-Host ""
 
-          try {
-            $items = $rawJson | ConvertFrom-Json
-            if ($items.Count -gt 0) {
-              Write-Host "=== First item structure ===" -ForegroundColor Yellow
-              $items[0] | ConvertTo-Json -Depth 5
-              Write-Host ""
-              Write-Host "=== Property names ===" -ForegroundColor Yellow
-              $items[0].PSObject.Properties.Name
-            } else {
-              Write-Host "No items in graph"
+          # kane-cli --json emits NDJSON: one JSON object per line, not a wrapped array
+          function Parse-KaneNdjson($raw) {
+            if (-not $raw) { return @() }
+            $objs = @()
+            foreach ($line in ($raw -split "`r?`n")) {
+              $trimmed = $line.Trim()
+              if ($trimmed) {
+                try { $objs += ($trimmed | ConvertFrom-Json) } catch { Write-Host "  (skipped unparsable line: $trimmed)" -ForegroundColor DarkYellow }
+              }
             }
-          } catch {
-            Write-Host "Could not parse JSON: $_"
+            return $objs
+          }
+
+          $items = Parse-KaneNdjson $rawJson
+          if ($items.Count -gt 0) {
+            Write-Host "=== First item structure ===" -ForegroundColor Yellow
+            $items[0] | ConvertTo-Json -Depth 5
+            Write-Host ""
+            Write-Host "=== Property names ===" -ForegroundColor Yellow
+            $items[0].PSObject.Properties.Name
+          } else {
+            Write-Host "No items in graph"
           }
 
       - name: "Phase 2 - Review and approve use-cases"
@@ -217,8 +226,20 @@ jobs:
             $rawJson = Get-Content "all-items.json" -Raw -ErrorAction SilentlyContinue
           }
 
+          function Parse-KaneNdjson($raw) {
+            if (-not $raw) { return @() }
+            $objs = @()
+            foreach ($line in ($raw -split "`r?`n")) {
+              $trimmed = $line.Trim()
+              if ($trimmed) {
+                try { $objs += ($trimmed | ConvertFrom-Json) } catch { }
+              }
+            }
+            return $objs
+          }
+
           try {
-            $items = $rawJson | ConvertFrom-Json
+            $items = Parse-KaneNdjson $rawJson
             $verdicts = @()
             foreach ($item in $items) {
               $refValue = $null
@@ -301,8 +322,20 @@ jobs:
             exit 1
           }
 
+          function Parse-KaneNdjson($raw) {
+            if (-not $raw) { return @() }
+            $objs = @()
+            foreach ($line in ($raw -split "`r?`n")) {
+              $trimmed = $line.Trim()
+              if ($trimmed) {
+                try { $objs += ($trimmed | ConvertFrom-Json) } catch { }
+              }
+            }
+            return $objs
+          }
+
           try {
-            $items = $rawJson | ConvertFrom-Json
+            $items = Parse-KaneNdjson $rawJson
             $usecases = @()
 
             foreach ($item in $items) {
@@ -313,6 +346,9 @@ jobs:
               if (-not $refValue) { continue }
 
               $isUseCase = $false
+              if ($item.PSObject.Properties['label'] -and $item.label -in @('usecase', 'use-case', 'use_case')) {
+                $isUseCase = $true
+              }
               if ($item.PSObject.Properties['type'] -and $item.type -in @('use-case', 'use_case', 'usecase')) {
                 $isUseCase = $true
               }
@@ -408,8 +444,21 @@ jobs:
         run: |
           kane-cli context list --json > post-design-items.json 2>graph-stderr.log
           $rawJson = Get-Content "post-design-items.json" -Raw -ErrorAction SilentlyContinue
+
+          function Parse-KaneNdjson($raw) {
+            if (-not $raw) { return @() }
+            $objs = @()
+            foreach ($line in ($raw -split "`r?`n")) {
+              $trimmed = $line.Trim()
+              if ($trimmed) {
+                try { $objs += ($trimmed | ConvertFrom-Json) } catch { }
+              }
+            }
+            return $objs
+          }
+
           try {
-            $items = $rawJson | ConvertFrom-Json
+            $items = Parse-KaneNdjson $rawJson
             $verdicts = @()
             foreach ($item in $items) {
               $refValue = $null
