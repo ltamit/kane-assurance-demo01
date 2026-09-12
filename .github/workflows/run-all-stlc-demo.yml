@@ -113,7 +113,7 @@ jobs:
 
       # - name: "Setup - Authenticate"
       #   run: |
-      #     kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
+      #     kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY" || true
 
       - name: "Setup - Validate max_tests is numeric"
         if: inputs.phases == 'all' || inputs.phases == '3'
@@ -203,7 +203,7 @@ jobs:
         run: |
           echo ""
           echo "-- Extracted use-cases --"
-          kane-cli context list
+          kane-cli context list || true
 
       # ===========================================================
       # PHASE 2: Test Planning
@@ -253,7 +253,7 @@ jobs:
 
       - name: "Phase 2 - Graph after review"
         if: inputs.phases == 'all' || inputs.phases == '2'
-        run: kane-cli context list
+        run: kane-cli context list || true
 
       # ===========================================================
       # PHASE 3: Test Design
