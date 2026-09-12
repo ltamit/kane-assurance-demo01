@@ -186,8 +186,8 @@ jobs:
           Write-Host "================================================" -ForegroundColor Cyan
           Write-Host ""
 
-          $rawJson = kane-cli context list --json 2>$null
-          [System.IO.File]::WriteAllText("$PWD\all-items.json", ($rawJson | Out-String), (New-Object System.Text.UTF8Encoding $false))
+          kane-cli context list --json > all-items.json 2>graph-stderr.log
+          $rawJson = Get-Content "all-items.json" -Raw -ErrorAction SilentlyContinue
 
           Write-Host "=== Raw JSON from kane-cli context list --json ===" -ForegroundColor Yellow
           Write-Host $rawJson
@@ -212,7 +212,10 @@ jobs:
         if: inputs.phases == 'all' || inputs.phases == '2'
         run: |
           $rawJson = Get-Content "all-items.json" -Raw -ErrorAction SilentlyContinue
-          if (-not $rawJson) { $rawJson = kane-cli context list --json 2>$null }
+          if (-not $rawJson) {
+            kane-cli context list --json > all-items.json 2>graph-stderr.log
+            $rawJson = Get-Content "all-items.json" -Raw -ErrorAction SilentlyContinue
+          }
 
           try {
             $items = $rawJson | ConvertFrom-Json
@@ -275,9 +278,9 @@ jobs:
             exit 1
           }
 
-          $rawJson = kane-cli context list --json 2>graph-stderr.log
+          kane-cli context list --json > graph.json 2>graph-stderr.log
           $exitCode = $LASTEXITCODE
-          [System.IO.File]::WriteAllText("$PWD\graph.json", ($rawJson | Out-String), (New-Object System.Text.UTF8Encoding $false))
+          $rawJson = Get-Content "graph.json" -Raw -ErrorAction SilentlyContinue
 
           Write-Host "=== Raw output from context list --json ===" -ForegroundColor Yellow
           Write-Host $rawJson
@@ -403,7 +406,8 @@ jobs:
       - name: "Phase 3 - Approve designed tests"
         if: inputs.phases == 'all' || inputs.phases == '3'
         run: |
-          $rawJson = kane-cli context list --json 2>$null
+          kane-cli context list --json > post-design-items.json 2>graph-stderr.log
+          $rawJson = Get-Content "post-design-items.json" -Raw -ErrorAction SilentlyContinue
           try {
             $items = $rawJson | ConvertFrom-Json
             $verdicts = @()
@@ -521,13 +525,15 @@ jobs:
       - name: "Phase 6 - Save JSON"
         if: inputs.phases == 'all' || inputs.phases == '6'
         run: |
-          $cover = kane-cli cover --json 2>$null
-          $coverContent = if ($cover) { $cover | Out-String } else { '{}' }
-          [System.IO.File]::WriteAllText("$PWD\coverage.json", $coverContent, (New-Object System.Text.UTF8Encoding $false))
+          kane-cli cover --json > coverage.json 2>cover-stderr.log
+          if (-not (Get-Content "coverage.json" -Raw -ErrorAction SilentlyContinue)) {
+            [System.IO.File]::WriteAllText("$PWD\coverage.json", '{}', (New-Object System.Text.UTF8Encoding $false))
+          }
 
-          $gaps = kane-cli cover gaps --json 2>$null
-          $gapsContent = if ($gaps) { $gaps | Out-String } else { '[]' }
-          [System.IO.File]::WriteAllText("$PWD\coverage-gaps.json", $gapsContent, (New-Object System.Text.UTF8Encoding $false))
+          kane-cli cover gaps --json > coverage-gaps.json 2>gaps-stderr.log
+          if (-not (Get-Content "coverage-gaps.json" -Raw -ErrorAction SilentlyContinue)) {
+            [System.IO.File]::WriteAllText("$PWD\coverage-gaps.json", '[]', (New-Object System.Text.UTF8Encoding $false))
+          }
 
       # ===========================================================
       # PHASE 7: Maintenance
