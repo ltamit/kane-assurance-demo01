@@ -94,6 +94,18 @@ jobs:
     steps:
       # -- Setup ------------------------------------------
       - uses: actions/checkout@v4
+        with:
+          # CRITICAL for self-hosted runners: actions/checkout defaults to
+          # running 'git clean -ffdx' before checkout, which deletes ALL
+          # untracked files - including .context/ and .testmuai/ - at the
+          # start of every job. On a GitHub-hosted runner that's harmless
+          # (fresh disk every time anyway), but on THIS self-hosted runner
+          # it was silently wiping the context graph and designed test
+          # files between runs, even when actions/cache restore worked for
+          # some paths but not others. clean: false lets the runner's own
+          # persistent disk be the source of truth, the way it already is
+          # for a machine that isn't torn down between jobs.
+          clean: false
 
       - name: "Setup - Verify prerequisites"
         run: |
