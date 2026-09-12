@@ -242,6 +242,9 @@ jobs:
             $items = Parse-KaneNdjson $rawJson
             $verdicts = @()
             foreach ($item in $items) {
+              # Sources are never reviewable - only use-cases (and later, tests) go through review
+              if ($item.PSObject.Properties['label'] -and $item.label -eq 'source') { continue }
+
               $refValue = $null
               foreach ($field in @('ref', 'id', 'slug', 'name')) {
                 if ($item.PSObject.Properties[$field] -and $item.$field) {
@@ -461,6 +464,9 @@ jobs:
             $items = Parse-KaneNdjson $rawJson
             $verdicts = @()
             foreach ($item in $items) {
+              # Sources are never reviewable - only use-cases and tests go through review
+              if ($item.PSObject.Properties['label'] -and $item.label -eq 'source') { continue }
+
               $refValue = $null
               foreach ($field in @('ref', 'id', 'slug', 'name')) {
                 if ($item.PSObject.Properties[$field] -and $item.$field) { $refValue = $item.$field; break }
