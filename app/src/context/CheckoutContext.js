@@ -1,5 +1,6 @@
 'use client';
 import { createContext, useContext, useState, useEffect } from 'react';
+import products from '../data/products.json';
 
 const CheckoutContext = createContext(null);
 
@@ -25,8 +26,32 @@ export function CheckoutProvider({ children }) {
   useEffect(() => {
     setMounted(true);
     try {
-      const saved = localStorage.getItem('shopeasy_cart');
-      if (saved) setCart(JSON.parse(saved));
+      // Deterministic fixture seeding for test automation: a URL like
+      // /cart?seed=p9:1 (or /checkout/shipping?seed=p10:1,p6:2) sets the
+      // cart to EXACTLY those items/quantities, overriding localStorage.
+      // Format: seed=productId:qty,productId2:qty2 (qty optional, default 1)
+      const params = new URLSearchParams(window.location.search);
+      const seed = params.get('seed');
+
+      if (seed) {
+        const seededCart = seed.split(',').map(pair => {
+          const [idPart, qtyPart] = pair.split(':');
+          const id = (idPart || '').trim();
+          const product = products.find(p => p.id === id);
+          if (!product) return null;
+          const qty = Math.max(1, Math.min(10, parseInt(qtyPart, 10) || 1));
+          return { key: product.id, product, variant: null, qty };
+        }).filter(Boolean);
+
+        if (seededCart.length > 0) {
+          setCart(seededCart);
+          localStorage.setItem('shopeasy_cart', JSON.stringify(seededCart));
+        }
+      } else {
+        const saved = localStorage.getItem('shopeasy_cart');
+        if (saved) setCart(JSON.parse(saved));
+      }
+
       const reg = localStorage.getItem('shopeasy_registered');
       if (reg) setIsRegistered(reg === 'true');
     } catch {}
