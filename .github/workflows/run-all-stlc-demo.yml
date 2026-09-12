@@ -148,22 +148,15 @@ jobs:
             echo "Chrome not found in PATH - ensure it is installed (this may still be fine if kane-cli locates it independently)"
           fi
 
-      - name: "Setup - Restore context graph from cache"
-        if: >-
-          inputs.phases == '2' ||
-          inputs.phases == '3' ||
-          inputs.phases == '4' ||
-          inputs.phases == '5' ||
-          inputs.phases == '6' ||
-          inputs.phases == '7'
-        uses: actions/cache@v4
-        with:
-          path: |
-            .context/
-            .testmuai/
-          key: stlc-context-${{ inputs.source_id }}-${{ github.run_number }}
-          restore-keys: |
-            stlc-context-${{ inputs.source_id }}-
+      # NOTE: no cache restore step here. On this self-hosted runner,
+      # 'clean: false' on checkout already lets .context/ and .testmuai/
+      # persist naturally on disk between runs - that's the single source
+      # of truth now. A cache-restore step was removed from here because
+      # actions/cache extracts its archive ON TOP of existing files: it was
+      # silently overwriting freshly-edited assurance.json variable values
+      # with a stale snapshot from an earlier run, every single time. Do
+      # not re-add cache restore/save unless this workflow moves to a
+      # runner whose disk does NOT persist between jobs.
 
       # ===========================================================
       # PHASE 1: Requirements Analysis
@@ -602,14 +595,10 @@ jobs:
         run: |
           kane-cli context view --output context-graph.html || echo "Graph generation skipped"
 
-      - name: "Save to cache"
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            .context/
-            .testmuai/
-          key: stlc-context-${{ inputs.source_id }}-${{ github.run_number }}
+      # NOTE: no cache save step here either - see the note near the top of
+      # the file. .context/ and .testmuai/ already persist on this runner's
+      # disk via 'clean: false'; saving to actions/cache here would just
+      # recreate the stale-overwrite problem on some future run.
 
       - name: "Summary"
         if: always()
