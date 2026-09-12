@@ -87,16 +87,16 @@ jobs:
           Write-Host "Kane CLI: $(kane-cli --version 2>$null)"
           Write-Host ""
 
-      - name: "Setup - Install/update Kane CLI"
-        run: |
-          npm install -g @testmuai/kane-cli
-          kane-cli --version
-          kane-cli install skill 2>$null
-          if ($LASTEXITCODE -ne 0) { Write-Host "Skill install skipped" }
+      # - name: "Setup - Install/update Kane CLI"
+      #   run: |
+      #     npm install -g @testmuai/kane-cli
+      #     kane-cli --version
+      #     kane-cli install skill 2>$null
+      #     if ($LASTEXITCODE -ne 0) { Write-Host "Skill install skipped" }
 
-      - name: "Setup - Authenticate"
-        run: |
-          kane-cli login --username "${{ secrets.LT_USERNAME }}" --access-key "${{ secrets.LT_ACCESS_KEY }}"
+      # - name: "Setup - Authenticate"
+      #   run: |
+      #     kane-cli login --username "${{ secrets.LT_USERNAME }}" --access-key "${{ secrets.LT_ACCESS_KEY }}"
 
       - name: "Setup - Validate max_tests is numeric"
         if: inputs.phases == 'all' || inputs.phases == '3'
