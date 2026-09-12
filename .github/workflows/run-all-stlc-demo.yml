@@ -90,15 +90,15 @@ jobs:
           echo "Shell: $(bash --version | head -1)"
           echo ""
 
-      - name: "Setup - Install/update Kane CLI"
-        run: |
-          npm install -g @testmuai/kane-cli
-          kane-cli --version
-          kane-cli install skill || echo "Skill install skipped"
+      # - name: "Setup - Install/update Kane CLI"
+      #   run: |
+      #     npm install -g @testmuai/kane-cli
+      #     kane-cli --version
+      #     kane-cli install skill || echo "Skill install skipped"
 
-      - name: "Setup - Authenticate"
-        run: |
-          kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
+      # - name: "Setup - Authenticate"
+      #   run: |
+      #     kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
 
       - name: "Setup - Validate max_tests is numeric"
         if: inputs.phases == 'all' || inputs.phases == '3'
