@@ -6,5 +6,7 @@
   {"id":"p5","name":"Yoga Mat (Purple)","price":24.99,"image":"https://picsum.photos/seed/yogamat/300/300","variants":null,"inStock":false,"failAtPlacement":false},
   {"id":"p6","name":"Stainless Water Bottle","price":19.99,"image":"https://picsum.photos/seed/bottle/300/300","variants":{"color":["Silver","Black","Blue"]},"inStock":true,"failAtPlacement":false},
   {"id":"p7","name":"Sunglasses","price":15.99,"image":"https://picsum.photos/seed/sunglasses/300/300","variants":null,"inStock":true,"failAtPlacement":false},
-  {"id":"p8","name":"Phone Case","price":12.99,"image":"https://picsum.photos/seed/phonecase/300/300","variants":{"color":["Clear","Black"]},"inStock":false,"failAtPlacement":true}
+  {"id":"p8","name":"Phone Case","price":12.99,"image":"https://picsum.photos/seed/phonecase/300/300","variants":{"color":["Clear","Black"]},"inStock":false,"failAtPlacement":true},
+  {"id":"p9","name":"Mini Keychain","price":5.00,"image":"https://picsum.photos/seed/keychain/300/300","variants":null,"inStock":true,"failAtPlacement":false},
+  {"id":"p10","name":"Sticker Pack","price":2.99,"image":"https://picsum.photos/seed/stickers/300/300","variants":null,"inStock":true,"failAtPlacement":false}
 ]
