@@ -2,6 +2,8 @@
 
 A ready-to-fork demo repository that maps Kane CLI Assurance to every phase of the Software Testing Lifecycle. Each STLC phase is a separate GitHub Actions workflow — run them individually to demonstrate specific phases, or use the orchestrator to run everything end-to-end.
 
+**Public URL to be tested - https://app-alpha-ten-25.vercel.app**
+
 ## The STLC → GitHub Actions mapping
 
 | # | STLC Phase | Workflow | Kane CLI Commands | What the prospect sees |
