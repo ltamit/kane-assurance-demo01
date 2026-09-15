@@ -1,23 +1,29 @@
-name: "Kane CLI Assurance - STLC Demo"
+name: "Kane CLI Assurance - Design & Maintenance (CI)"
 
 # ---------------------------------------------------------
-# All 7 STLC phases in one workflow, on YOUR Windows machine.
-# Bash + jq via Git Bash - no PowerShell.
-# Chrome opens VISIBLY on your desktop for phases 4-5.
+# Phases 1, 2, 3, 7 only - the design layer. No Chrome, no
+# live app needed, fully unattended-safe on the self-hosted
+# runner. Phases 4-6 (author, execute, coverage) run LOCALLY
+# via Claude Code instead - see docs/local-phases-4-6.md.
+#
+# Both this workflow and the local runbook operate on the
+# SAME working directory on this machine (the runner's own
+# workspace), so .context/ and .testmuai/ carry over between
+# a CI run here and a local Claude Code session there with no
+# sync step needed.
 #
 # ONE-TIME SETUP on your Windows machine (as Administrator):
 #   1. Self-hosted runner configured and running (.\run.cmd)
 #   2. Node.js 24+ installed and in PATH
-#   3. Google Chrome installed
-#   4. Kane CLI: npm install -g @testmuai/kane-cli
-#   5. Add Git Bash to system PATH:
+#   3. Kane CLI: npm install -g @testmuai/kane-cli
+#   4. Add Git Bash to system PATH:
 #        $gitBashPath = "C:\Program Files\Git\bin"
 #        [Environment]::SetEnvironmentVariable("PATH", $env:PATH + ";$gitBashPath", "Machine")
-#   6. Install jq:
+#   5. Install jq:
 #        choco install jq -y
-#   7. Restart the runner so it picks up the new PATH
+#   6. Restart the runner so it picks up the new PATH
 #
-# Trigger: Actions -> Kane CLI Assurance - STLC Demo -> Run workflow
+# Trigger: Actions -> Kane CLI Assurance - Design & Maintenance (CI) -> Run workflow
 # ---------------------------------------------------------
 
 on:
@@ -33,9 +39,6 @@ on:
           - '1'
           - '2'
           - '3'
-          - '4'
-          - '5'
-          - '6'
           - '7'
       source_file:
         description: 'PRD file path'
@@ -45,10 +48,6 @@ on:
         description: 'Source ID'
         required: true
         default: 'prd-checkout'
-      app_url:
-        description: 'ShopEasy app URL (needed for phases 4-5, "skip" to skip)'
-        required: true
-        default: 'skip'
       max_tests:
         description: 'Max tests per use-case (number only)'
         required: true
@@ -67,10 +66,10 @@ env:
   LT_ACCESS_KEY: ${{ secrets.LT_ACCESS_KEY }}
 
 jobs:
-  stlc-demo:
-    name: "STLC Demo - ${{ inputs.phases }}"
+  stlc-design:
+    name: "Design & Maintenance - ${{ inputs.phases }}"
     runs-on: self-hosted
-    timeout-minutes: 120
+    timeout-minutes: 90
 
     defaults:
       run:
@@ -80,8 +79,6 @@ jobs:
         # and resumable", or a command completing with warnings). Under -e,
         # bash aborts the entire step the instant such a command returns
         # non-zero - before the script ever reaches its own exit-code checks.
-        # GitHub's own default 'shell: bash' includes -e, which is exactly
-        # what silently broke the resume-on-pause logic earlier.
         #
         # If plain 'bash' isn't resolvable on this runner's PATH, replace the
         # line below with the 8.3 short path to bash.exe (no spaces), e.g.:
@@ -98,13 +95,10 @@ jobs:
           # CRITICAL for self-hosted runners: actions/checkout defaults to
           # running 'git clean -ffdx' before checkout, which deletes ALL
           # untracked files - including .context/ and .testmuai/ - at the
-          # start of every job. On a GitHub-hosted runner that's harmless
-          # (fresh disk every time anyway), but on THIS self-hosted runner
-          # it was silently wiping the context graph and designed test
-          # files between runs, even when actions/cache restore worked for
-          # some paths but not others. clean: false lets the runner's own
-          # persistent disk be the source of truth, the way it already is
-          # for a machine that isn't torn down between jobs.
+          # start of every job. clean: false lets the runner's own
+          # persistent disk be the source of truth, since this machine
+          # isn't torn down between jobs (and Claude Code needs that same
+          # persistent state to pick up where CI left off).
           clean: false
 
       - name: "Setup - Verify prerequisites"
@@ -133,30 +127,17 @@ jobs:
           MAX="${{ inputs.max_tests }}"
           if ! [[ "$MAX" =~ ^[0-9]+$ ]]; then
             echo "ERROR: max_tests must be a plain number, got: $MAX"
-            echo "Check that app_url and max_tests inputs were not swapped"
             exit 1
           fi
 
-      - name: "Setup - Check Chrome"
-        if: >-
-          (inputs.phases == 'all' || inputs.phases == '4' || inputs.phases == '5')
-          && inputs.app_url != 'skip'
-        run: |
-          if command -v chrome >/dev/null 2>&1; then
-            echo "Chrome found in PATH"
-          else
-            echo "Chrome not found in PATH - ensure it is installed (this may still be fine if kane-cli locates it independently)"
-          fi
-
-      # NOTE: no cache restore step here. On this self-hosted runner,
-      # 'clean: false' on checkout already lets .context/ and .testmuai/
-      # persist naturally on disk between runs - that's the single source
-      # of truth now. A cache-restore step was removed from here because
-      # actions/cache extracts its archive ON TOP of existing files: it was
-      # silently overwriting freshly-edited assurance.json variable values
-      # with a stale snapshot from an earlier run, every single time. Do
-      # not re-add cache restore/save unless this workflow moves to a
-      # runner whose disk does NOT persist between jobs.
+      # NOTE: no cache restore/save steps here. See CI history: on this
+      # self-hosted runner, 'clean: false' on checkout already lets
+      # .context/ and .testmuai/ persist naturally on disk between runs -
+      # that's the single source of truth. actions/cache extracts its
+      # archive ON TOP of existing files, so it was silently overwriting
+      # freshly-edited variable values with stale snapshots. Do not re-add
+      # it unless this workflow moves to a runner whose disk does not
+      # persist between jobs.
 
       # ===========================================================
       # PHASE 1: Requirements Analysis
@@ -404,8 +385,7 @@ jobs:
           fi
 
       - name: "Phase 3 - Scan for unresolved variables (across ALL tests)"
-        if: >-
-          inputs.phases == 'all' || inputs.phases == '3' || inputs.phases == '4'
+        if: inputs.phases == 'all' || inputs.phases == '3'
         run: |
           echo ""
           echo "================================================"
@@ -417,13 +397,17 @@ jobs:
           echo "conceptually identical fixtures. This scan reads the"
           echo "actual test files instead of guessing names in advance."
           echo ""
+          echo "NOTE: fill new values in .testmuai/variables/zz-fixtures.json,"
+          echo "NOT assurance.json - design sessions regenerate that file."
+          echo "zz-fixtures.json loads after it alphabetically and wins."
+          echo ""
 
           if [ ! -d ".testmuai/tests" ]; then
             echo "No .testmuai/tests directory - run phase 3 design first"
             exit 0
           fi
 
-          VARS_FILE=".testmuai/variables/assurance.json"
+          VARS_DIR=".testmuai/variables"
 
           # Extract every unique {{variable}} placeholder across all test files
           mapfile -t all_vars < <(grep -ohE '\{\{[a-zA-Z0-9_]+\}\}' .testmuai/tests/*_test.md 2>/dev/null \
@@ -434,15 +418,17 @@ jobs:
             exit 0
           fi
 
+          echo "Variable files present (loaded alphabetically, later overrides earlier):"
+          ls -la "$VARS_DIR"/*.json 2>/dev/null || echo "  (none)"
+          echo ""
           echo "Found ${#all_vars[@]} unique variable(s):"
           echo ""
 
           missing_count=0
           for var in "${all_vars[@]}"; do
-            value=""
-            if [ -f "$VARS_FILE" ]; then
-              value=$(jq -r --arg v "$var" '.[$v].value // empty' "$VARS_FILE" 2>/dev/null)
-            fi
+            # Merge ALL *.json files the same way kane-cli does: alphabetical
+            # order, later files override earlier ones for duplicate keys.
+            value=$(jq -s -r --arg v "$var" 'add | .[$v].value // empty' "$VARS_DIR"/*.json 2>/dev/null)
 
             used_by=$(grep -l "{{$var}}" .testmuai/tests/*_test.md 2>/dev/null \
               | xargs -n1 basename 2>/dev/null | tr '\n' ',' | sed 's/,$//')
@@ -458,108 +444,16 @@ jobs:
 
           echo ""
           if [ "$missing_count" -gt 0 ]; then
-            echo "$missing_count variable(s) still need values in: $VARS_FILE"
-            echo "Fill all of them in now, then run phase 4 - one consolidated"
-            echo "pass instead of discovering them one test at a time."
+            echo "$missing_count variable(s) still need values."
+            echo "Fill these locally (via Claude Code) before running phase 4 -"
+            echo "see docs/local-phases-4-6.md"
           else
-            echo "All variables resolved - ready for phase 4"
+            echo "All variables resolved - ready for local phase 4"
           fi
-
-      # ===========================================================
-      # PHASE 4: Test Development (visible Chrome window)
-      # ===========================================================
-      - name: "Phase 4 - Author tests (Chrome opens on your screen)"
-        if: >-
-          (inputs.phases == 'all' || inputs.phases == '4')
-          && inputs.app_url != 'skip'
-        timeout-minutes: 15
-        run: |
-          echo ""
-          echo "================================================"
-          echo "  Phase 4: Test Development"
-          echo "  App: ${{ inputs.app_url }}"
-          echo "  >>> Chrome will open on your desktop! <<<"
-          echo "================================================"
-          echo ""
-
-          if [ -d ".testmuai/tests" ]; then
-            mapfile -t tests < <(find .testmuai/tests -name '*_test.md' | head -3)
-            if [ "${#tests[@]}" -eq 0 ]; then
-              echo "No test files found - skipping"
-              exit 0
-            fi
-            for test in "${tests[@]}"; do
-              echo "-- Authoring: $(basename "$test") --"
-              kane-cli testmd run "$test" --url "${{ inputs.app_url }}"
-              if [ $? -ne 0 ]; then
-                echo "Authoring completed with issues"
-              fi
-              echo ""
-            done
-          else
-            echo "No .testmuai/tests directory - run phase 3 first"
-          fi
-
-      - name: "Phase 4 - Skipped"
-        if: >-
-          (inputs.phases == 'all' || inputs.phases == '4')
-          && inputs.app_url == 'skip'
-        run: echo "Phase 4 skipped - set app_url to a live URL to enable"
-
-      # ===========================================================
-      # PHASE 5: Test Execution (visible Chrome window)
-      # ===========================================================
-      - name: "Phase 5 - Batch replay (Chrome opens on your screen)"
-        if: >-
-          (inputs.phases == 'all' || inputs.phases == '5')
-          && inputs.app_url != 'skip'
-        timeout-minutes: 15
-        run: |
-          echo ""
-          echo "================================================"
-          echo "  Phase 5: Test Execution"
-          echo "  >>> Chrome will open on your desktop! <<<"
-          echo "================================================"
-          echo ""
-          kane-cli testrun run --match "t-" --url "${{ inputs.app_url }}"
-          if [ $? -ne 0 ]; then
-            echo "Some tests may have failed - check evidence"
-          fi
-
-      - name: "Phase 5 - Skipped"
-        if: >-
-          (inputs.phases == 'all' || inputs.phases == '5')
-          && inputs.app_url == 'skip'
-        run: echo "Phase 5 skipped - set app_url to a live URL to enable"
-
-      # ===========================================================
-      # PHASE 6: Coverage & Reporting
-      # ===========================================================
-      - name: "Phase 6 - Coverage report"
-        if: inputs.phases == 'all' || inputs.phases == '6'
-        run: |
-          echo ""
-          echo "================================================"
-          echo "  Phase 6: Coverage & Reporting"
-          echo "================================================"
-          echo ""
-          echo "-- Coverage panel --"
-          kane-cli cover || echo "No evidence packs yet"
-          echo ""
-          echo "-- Coverage gaps --"
-          kane-cli cover gaps || echo "No gaps to report"
-
-      - name: "Phase 6 - Save JSON"
-        if: inputs.phases == 'all' || inputs.phases == '6'
-        run: |
-          kane-cli cover --json > coverage.json 2>cover-stderr.log
-          if [ ! -s coverage.json ]; then echo "{}" > coverage.json; fi
-
-          kane-cli cover gaps --json > coverage-gaps.json 2>gaps-stderr.log
-          if [ ! -s coverage-gaps.json ]; then echo "[]" > coverage-gaps.json; fi
 
       # ===========================================================
       # PHASE 7: Maintenance
+      # kane-cli: maintain reconcile
       # ===========================================================
       - name: "Phase 7 - Reconcile PRD change"
         if: inputs.phases == 'all' || inputs.phases == '7'
@@ -595,28 +489,23 @@ jobs:
         run: |
           kane-cli context view --output context-graph.html || echo "Graph generation skipped"
 
-      # NOTE: no cache save step here either - see the note near the top of
-      # the file. .context/ and .testmuai/ already persist on this runner's
-      # disk via 'clean: false'; saving to actions/cache here would just
-      # recreate the stale-overwrite problem on some future run.
-
       - name: "Summary"
         if: always()
         run: |
           echo ""
           echo "================================================"
           echo "  Run complete: phase ${{ inputs.phases }}"
+          echo "  Next: run phases 4-6 locally via Claude Code"
+          echo "  (see docs/local-phases-4-6.md)"
           echo "================================================"
 
       - name: "Upload artifacts"
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: stlc-phase-${{ inputs.phases }}-${{ github.run_number }}
+          name: stlc-design-${{ inputs.phases }}-${{ github.run_number }}
           retention-days: 30
           path: |
-            coverage.json
-            coverage-gaps.json
             context-graph.html
             all-items.json
             verdicts.json
